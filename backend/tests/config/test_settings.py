@@ -1,0 +1,55 @@
+import pytest
+from pydantic import ValidationError
+
+from app.config import Settings
+
+_REQUIRED = {
+    "supabase_url": "https://example.supabase.co",
+    "supabase_anon_key": "anon",
+    "supabase_service_role_key": "service",
+    "google_api_key": "key",
+    "openai_embedding_model": "text-embedding-3-small",
+    "openai_embedding_dimensions": 1536,
+    "allowed_origins": "http://localhost:5173",
+}
+
+
+def test_splits_comma_separated_origins() -> None:
+    settings = Settings(
+        **(_REQUIRED | {"allowed_origins": "http://localhost:5173, http://127.0.0.1:5173"}),
+        database_url="postgresql://postgres:pass@db.example.supabase.co:5432/postgres",
+    )
+    assert settings.allowed_origins == [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
+
+
+def test_rejects_transaction_pooler_database_url() -> None:
+    with pytest.raises(ValidationError):
+        Settings(
+            **_REQUIRED,
+            database_url=(
+                "postgresql://postgres:pass@aws-0-us-east-1.pooler.supabase.com:6543/postgres"
+            ),
+        )
+
+
+def test_allows_session_pooler_database_url() -> None:
+    """Session pooler (port 5432) is the IPv4-compatible path for migrations."""
+
+    settings = Settings(
+        **_REQUIRED,
+        database_url=(
+            "postgresql://postgres.ref:pass@aws-0-us-east-1.pooler.supabase.com:5432/postgres"
+        ),
+    )
+    assert settings.sqlalchemy_database_url.startswith("postgresql+psycopg://")
+
+
+def test_uses_psycopg_driver_in_sqlalchemy_url() -> None:
+    settings = Settings(
+        **_REQUIRED,
+        database_url="postgresql://postgres:pass@db.example.supabase.co:5432/postgres",
+    )
+    assert settings.sqlalchemy_database_url.startswith("postgresql+psycopg://")

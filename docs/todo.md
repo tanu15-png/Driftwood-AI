@@ -20,11 +20,11 @@ Mark items `[x]` as you finish them. Keep the current phase until its "done when
 
 Goal: you can run empty services and talk to a hosted Supabase project.
 
-- [ ] Install Python 3.12+, `uv`, Node 20+, `pnpm` (see root `README.md`)
-- [ ] Create a hosted Supabase project (free tier is enough). Follow `docs/guides/supabase-setup.md`
-- [ ] Copy credentials into `backend/.env` from `backend/.env.example` (`SUPABASE_*`, `DATABASE_URL` **direct** connection — not the pooler)
-- [ ] Copy public credentials into `frontend/.env` from `frontend/.env.example` (`VITE_*` only — never `service_role`)
-- [ ] Create an OpenAI API key; put it in `backend/.env` (needed from Phase 5 onward)
+- [x] Install Python 3.12+, `uv`, Node 20+, `pnpm` (see root `README.md`)
+- [x] Create a hosted Supabase project (free tier is enough). Follow `docs/guides/supabase-setup.md`
+- [x] Copy credentials into `backend/.env` from `backend/.env.example` (`SUPABASE_*`, `DATABASE_URL` **direct** connection — not the pooler)
+- [x] Copy public credentials into `frontend/.env` from `frontend/.env.example` (`VITE_*` only — never `service_role`)
+- [x] Create an GEMINI API key; put it in `backend/.env` (needed from Phase 5 onward)
 - [ ] Auth: Email provider on; for local dev, disable "Confirm email" so sign-up works without inbox access
 - [ ] Confirm `data/download.py` `USER_AGENT` is set to a real contact email before hitting EDGAR
 
@@ -40,12 +40,12 @@ Goal: FastAPI boots, settings fail fast, and Supabase has the product tables.
 
 Backend
 
-- [ ] `cd backend && uv sync` then add locked stack deps (`fastapi`, `uvicorn`, `pydantic`, `pydantic-settings`, `httpx`, `structlog`, `openai`, `supabase`, `pydantic-ai`, `sqlalchemy`, `alembic`, `psycopg[binary]`, `pgvector`; dev: `pytest`, `ruff`)
-- [ ] `app/config.py` — pydantic-settings; fail fast if required env is missing; never `os.getenv` / `load_dotenv` in app code
-- [ ] `app/main.py` — FastAPI app, CORS from `ALLOWED_ORIGINS`, health route
-- [ ] `uv run alembic init alembic`; `env.py` imports SQLAlchemy metadata and `settings.DATABASE_URL` (direct/session URL only)
-- [ ] `app/database/models.py` — `profiles`, `chat_threads`, `chat_messages`, `message_citations`, `source_documents`, `document_chunks`
-- [ ] First reviewed migration: `vector` extension, tables, `vector(1536)`, generated `tsvector`, HNSW + GIN indexes, RLS + policies, grants
+- [x] `cd backend && uv sync` then add locked stack deps (`fastapi`, `uvicorn`, `pydantic`, `pydantic-settings`, `httpx`, `structlog`, `openai`, `supabase`, `pydantic-ai`, `sqlalchemy`, `alembic`, `psycopg[binary]`, `pgvector`; dev: `pytest`, `ruff`)
+- [x] `app/config.py` — pydantic-settings; fail fast if required env is missing; never `os.getenv` / `load_dotenv` in app code
+- [x] `app/main.py` — FastAPI app, CORS from `ALLOWED_ORIGINS`, health route
+- [x] `uv run alembic init alembic`; `env.py` imports SQLAlchemy metadata and `settings.DATABASE_URL` (direct/session URL only)
+- [x] `app/database/models/` package — `profiles`, `chat_threads`, `chat_messages`, `message_citations`, `source_documents`, `document_chunks` (one file per model + constants)
+- [x] First reviewed migration: `vector` extension, tables, `vector(1536)`, generated `tsvector`, HNSW + GIN indexes, RLS + policies, grants (`alembic/versions/2026_09_25-0001_initial_schema.py`; written + reviewed, **not yet applied**)
 - [ ] `uv run alembic upgrade head` against the hosted project
 - [ ] `app/database/supabase.py` — user-scoped vs service-role clients
 
