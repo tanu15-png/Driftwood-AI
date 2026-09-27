@@ -92,17 +92,17 @@ Goal: threads and messages persist per user; the UI streams *something* from Fas
 
 Backend
 
-- [ ] `app/database/chats.py` — create/list/get threads; list messages; enforce owner (`403` on other users' threads)
-- [ ] REST: list/create threads, load message history
-- [ ] `POST /chat/stream` — AI SDK-compatible stream of a **stub** assistant reply
-- [ ] Persist user + assistant messages only after a successful stub turn
-- [ ] `app/chat/messages.py` — AI SDK UI messages ↔ internal types
+- [x] `app/database/chats.py` — create/list/get threads; list messages; enforce owner (`403` on other users' threads; unknown threads are `404`)
+- [x] REST: list/create threads, load message history (`GET /threads`, `POST /threads`, `GET /threads/{id}/messages`)
+- [x] `POST /chat/stream` — AI SDK-compatible stream of a **stub** assistant reply (UI message stream v1 SSE: `start`/`text-start`/`text-delta`/`text-end`/`finish`/`[DONE]` + `x-vercel-ai-ui-message-stream: v1` header)
+- [x] Persist user + assistant messages only after a successful stub turn (both rows commit in one transaction inside the stream generator, after the last byte is yielded; client disconnects skip it)
+- [x] `app/chat/messages.py` — AI SDK UI messages ↔ internal types (`from_ui_message` validates user turns only; raw UI message stored in JSONB for replay)
 
 Frontend
 
-- [ ] Chat routes and thread sidebar (own conversations only)
-- [ ] `useChat` + `DefaultChatTransport` pointed at FastAPI `/chat/stream` (not a Vite/Next route)
-- [ ] Empty states, loading/streaming status, auth/network error messages
+- [x] Chat routes and thread sidebar (own conversations only) — `/` (new-chat screen) + `/t/:threadId`; sidebar lists backend threads, most recent first
+- [x] `useChat` + `DefaultChatTransport` pointed at FastAPI `/chat/stream` (not a Vite/Next route) — bearer token resolved per request via `prepareSendMessagesRequest` + `authHeaders`; `threadId` sent in the body; per-thread panel keyed by `threadId`
+- [x] Empty states, loading/streaming status, auth/network error messages — empty-thread prompt, "thinking…"/"Streaming…" status, typed banners distinguishing 401/403/404/network, stream Retry + Stop
 
 **Done when:** a signed-in analyst can start a thread, send a message, see a streamed stub reply, refresh, and still see history.
 

@@ -29,10 +29,15 @@ export class ApiError extends Error {
   }
 }
 
-async function bearerHeaders(): Promise<Record<string, string>> {
+/** Current Supabase access token as an Authorization header, if signed in. */
+export async function authHeaders(): Promise<Record<string, string>> {
   const { data } = await supabase.auth.getSession()
   const token = data.session?.access_token
   return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
+async function bearerHeaders(): Promise<Record<string, string>> {
+  return authHeaders()
 }
 
 async function parseErrorDetail(response: Response): Promise<string> {

@@ -14,6 +14,7 @@ export default function App() {
           <Route path="/signup" element={<SignUpPage />} />
           <Route element={<RequireAuth />}>
             <Route path="/" element={<ChatPage />} />
+            <Route path="/t/:threadId" element={<ChatPage />} />
           </Route>
         </Routes>
       </BrowserRouter>
