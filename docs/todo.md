@@ -114,12 +114,12 @@ Frontend
 
 Goal: sample 10-Ks are parsed, chunked, embedded, and stored so search has something to search.
 
-- [ ] Run `uv run data/download.py` from repo root; confirm `data/downloads/` + `manifest.json` (payloads stay gitignored)
-- [ ] `backend/ingest/` — HTML/filing → normalized Markdown → `source_documents` (ticker, company, form type, filing date, year, accession, source URL)
+- [x] Run `uv run data/download.py` from repo root; confirm `data/downloads/` + `manifest.json` (payloads stay gitignored) — 25 10-Ks on disk (5 tickers × FY2021–2025) with manifest
+- [x] `backend/ingest/` — HTML/filing → normalized Markdown → `source_documents` (ticker, company, form type, filing date, year, accession, source URL) — implemented as `data/convert_to_markdown.py` (docling) + `data/load_source_documents.py` (upsert keyed on accession_number) instead of a `backend/ingest/` package, kept out of backend code on purpose; 25/25 rows loaded and verified
 - [ ] Chunker: stable chunk index, page/section metadata, token count, metadata JSON (ticker, year, page, section, offsets)
 - [ ] Embeddings via configured OpenAI model/dimensions; write `document_chunks.embedding`
 - [ ] Populate generated `search_vector` (or confirm the generated column works)
-- [ ] Idempotent re-ingest (re-run does not duplicate filings)
+- [x] Idempotent re-ingest (re-run does not duplicate filings) — verified for `source_documents` (second run: 0 inserted, 0 updated); chunk re-ingest idempotency lands with the chunker below
 - [ ] Unit tests for parse/chunk (no network); optional `@pytest.mark.integration` for a live embed write
 
 **Done when:** Apple / Amazon / Alphabet / Microsoft / NVIDIA sample 10-Ks exist as documents + chunks in Supabase, with embeddings and full-text vectors.
