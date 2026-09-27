@@ -31,6 +31,7 @@ exclude-newer = "7 days"
 
 [dependency-groups]
 dev = [
+    "anyio==4.15.1",
     "ipykernel==7.3.0",
     "pytest==9.1.1",
     "ruff==0.16.7",
@@ -41,3 +42,6 @@ testpaths = ["tests"]
 markers = [
     "integration: hits network, OpenAI/Gemini, or the live database",
 ]
+# Auth/retrieval code is async; run async tests on anyio (stdlib-adjacent,
+# already a FastAPI dependency — no extra plugin needed).
+anyio_mode = "auto"

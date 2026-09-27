@@ -22,7 +22,7 @@ Goal: you can run empty services and talk to a hosted Supabase project.
 
 - [x] Install Python 3.12+, `uv`, Node 20+, `pnpm` (see root `README.md`)
 - [x] Create a hosted Supabase project (free tier is enough). Follow `docs/guides/supabase-setup.md`
-- [x] Copy credentials into `backend/.env` from `backend/.env.example` (`SUPABASE_*`, `DATABASE_URL` **direct** connection — not the pooler)
+- [x] Copy credentials into `backend/.env` from `backend/.env.example` (`SUPABASE_*`, `DATABASE_URL` **session pooler** (`:5432`) — the direct connection is IPv6-only and unreachable from WSL2; transaction pooler (`:6543`) is still rejected)
 - [x] Copy public credentials into `frontend/.env` from `frontend/.env.example` (`VITE_*` only — never `service_role`)
 - [x] Create an GEMINI API key; put it in `backend/.env` (needed from Phase 5 onward)
 - [ ] Auth: Email provider on; for local dev, disable "Confirm email" so sign-up works without inbox access
@@ -45,9 +45,9 @@ Backend
 - [x] `app/main.py` — FastAPI app, CORS from `ALLOWED_ORIGINS`, health route
 - [x] `uv run alembic init alembic`; `env.py` imports SQLAlchemy metadata and `settings.DATABASE_URL` (direct/session URL only)
 - [x] `app/database/models/` package — `profiles`, `chat_threads`, `chat_messages`, `message_citations`, `source_documents`, `document_chunks` (one file per model + constants)
-- [x] First reviewed migration: `vector` extension, tables, `vector(1536)`, generated `tsvector`, HNSW + GIN indexes, RLS + policies, grants (`alembic/versions/2026_09_25-0001_initial_schema.py`; written + reviewed, **not yet applied**)
-- [ ] `uv run alembic upgrade head` against the hosted project
-- [ ] `app/database/supabase.py` — user-scoped vs service-role clients
+- [x] First reviewed migration: `vector` extension, tables, `vector(1536)`, generated `tsvector`, HNSW + GIN indexes, RLS + policies, grants (`alembic/versions/2026_09_25-0001_initial_schema.py`; written, reviewed, and applied)
+- [x] `uv run alembic upgrade head` against the hosted project
+- [x] `app/database/supabase.py` — user-scoped vs service-role clients
 
 **Done when:** `uv run uvicorn app.main:app --reload` starts, `/health` works, and the six tables exist in Supabase with `pgvector` enabled.
 
@@ -63,22 +63,22 @@ Goal: an analyst can sign in with email and hit a protected backend route.
 
 Frontend scaffold
 
-- [ ] `cd frontend && pnpm create vite . --template react-ts` (or equivalent), Tailwind + shadcn, React Router
-- [ ] `src/lib/env.ts` — validate `VITE_API_BASE_URL`, `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` at boot
-- [ ] `src/lib/supabase.ts` — browser client (anon key only)
-- [ ] Sign-in / sign-up pages (email only, no SSO)
-- [ ] Auth gate: unauthenticated users cannot reach chat routes
+- [x] `cd frontend && pnpm create vite . --template react-ts` (or equivalent), Tailwind + shadcn, React Router (Vite + React 19 scaffold; Tailwind v4 via `@tailwindcss/vite`; shadcn initialized with Nova preset — `components.json`, theme tokens in `src/index.css`, first primitives in `src/components/ui/`. `react-router-dom` installed but **routes not wired yet** — `App.tsx` is still the starter template, see auth pages below)
+- [x] `src/lib/env.ts` — validate `VITE_API_BASE_URL`, `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` at boot
+- [x] `src/lib/supabase.ts` — browser client (anon key only)
+- [x] Sign-in / sign-up pages (email only, no SSO) — `src/pages/sign-in.tsx`, `src/pages/sign-up.tsx`; plain-password errors, sign-up handles both "confirm email on" and "off" flows
+- [x] Auth gate: unauthenticated users cannot reach chat routes — `AuthProvider` (`src/lib/auth-provider.tsx`) + `RequireAuth` (`src/components/auth/RequireAuth.tsx`); router wired in `App.tsx`
 
 Backend auth
 
-- [ ] `app/auth/dependencies.py` — verify `Authorization: Bearer <supabase JWT>` via Supabase Auth user endpoint; expose `get_current_user`
-- [ ] Reject missing/invalid tokens with `401` before any retrieval or LLM work
-- [ ] Create/read `profiles` row for the authenticated user
+- [x] `app/auth/dependencies.py` — verify `Authorization: Bearer <supabase JWT>` via Supabase Auth user endpoint; expose `get_current_user` (token checked against `/auth/v1/user` through the service-role client — no local JWT parsing, so revoked tokens fail immediately; unit tests in `tests/auth/test_dependencies.py`)
+- [x] Reject missing/invalid tokens with `401` before any retrieval or LLM work (`HTTPBearer(auto_error=False)` + explicit 401s with `WWW-Authenticate: Bearer`; verification happens before any DB, retrieval, or LLM work)
+- [x] Create/read `profiles` row for the authenticated user (first sign-in inserts via service role — profiles RLS is intentionally select-own-only; stale email updates in place)
 
 Glue
 
-- [ ] `src/lib/http.ts` + `src/lib/api.ts` — `fetch` wrapper, base URL, bearer injection, timeouts, typed errors (network vs HTTP)
-- [ ] One protected probe endpoint (e.g. `GET /me`) so you can prove the JWT round-trip in the browser
+- [x] `src/lib/http.ts` + `src/lib/api.ts` — `fetch` wrapper, base URL, bearer injection, timeouts, typed errors (network vs HTTP)
+- [x] One protected probe endpoint (e.g. `GET /me`) so you can prove the JWT round-trip in the browser — `backend/app/auth/routes.py` + placeholder chat page at `/` calling it
 
 **Done when:** you can sign up, sign in, and see your user from FastAPI in the browser. Chat UI can still be empty.
 
