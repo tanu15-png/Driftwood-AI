@@ -115,12 +115,12 @@ Frontend
 Goal: sample 10-Ks are parsed, chunked, embedded, and stored so search has something to search.
 
 - [x] Run `uv run data/download.py` from repo root; confirm `data/downloads/` + `manifest.json` (payloads stay gitignored) — 25 10-Ks on disk (5 tickers × FY2021–2025) with manifest
-- [x] `backend/ingest/` — HTML/filing → normalized Markdown → `source_documents` (ticker, company, form type, filing date, year, accession, source URL) — implemented as `data/convert_to_markdown.py` (docling) + `data/load_source_documents.py` (upsert keyed on accession_number) instead of a `backend/ingest/` package, kept out of backend code on purpose; 25/25 rows loaded and verified
-- [ ] Chunker: stable chunk index, page/section metadata, token count, metadata JSON (ticker, year, page, section, offsets)
-- [ ] Embeddings via configured OpenAI model/dimensions; write `document_chunks.embedding`
-- [ ] Populate generated `search_vector` (or confirm the generated column works)
+- [x] `backend/ingest/` — HTML/filing → normalized Markdown → `source_documents` (ticker, company, form type, filing date, year, accession, source URL) — implemented as `app/ingest/convert_to_docling_json.py` (docling HTML → `DoclingDocument` JSON + Markdown, needs the dedicated docling env) + `app/ingest/load_source_documents.py` (upsert keyed on accession_number); 25/25 rows loaded and verified. `data/convert_to_markdown.py` + `data/download.py` remain the only data/ scripts (download + standalone Markdown conversion)
+- [ ] Chunker: stable chunk index, page/section metadata, token count, metadata JSON (ticker, year, page, section, offsets) — implemented as `app/ingest/chunk_documents.py` (docling `HybridChunker` @ 800 tokens + `HierarchicalChunker` over `DoclingDocument` JSON; `page` stays NULL — SEC HTML has no real pages); awaiting first run
+- [ ] Embeddings via configured OpenAI model/dimensions; write `document_chunks.embedding` — implemented as `app/ingest/embed_and_load_chunks.py` (batched, retry/backoff, delete-then-insert idempotency, `--smoke` one-chunk cost gate); awaiting smoke run then full run
+- [ ] Populate generated `search_vector` (or confirm the generated column works) — nothing to populate: generated tsvector column (confirmed in model); verify it is non-null on the smoke row
 - [x] Idempotent re-ingest (re-run does not duplicate filings) — verified for `source_documents` (second run: 0 inserted, 0 updated); chunk re-ingest idempotency lands with the chunker below
-- [ ] Unit tests for parse/chunk (no network); optional `@pytest.mark.integration` for a live embed write
+- [x] Unit tests for parse/chunk (no network); optional `@pytest.mark.integration` for a live embed write — `tests/ingest/test_chunk_documents.py` (6 unit) + `tests/ingest/test_embed_and_load_chunks.py` (integration, run with `uv run pytest -m integration` and a real `OPENAI_API_KEY`)
 
 **Done when:** Apple / Amazon / Alphabet / Microsoft / NVIDIA sample 10-Ks exist as documents + chunks in Supabase, with embeddings and full-text vectors.
 
