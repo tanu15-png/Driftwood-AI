@@ -8,10 +8,26 @@ _REQUIRED = {
     "supabase_anon_key": "anon",
     "supabase_service_role_key": "service",
     "google_api_key": "key",
-    "openai_embedding_model": "text-embedding-3-small",
-    "openai_embedding_dimensions": 1536,
     "allowed_origins": "http://localhost:5173",
 }
+
+
+def test_embedding_model_defaults_to_gemini() -> None:
+    settings = Settings(
+        **_REQUIRED,
+        database_url="postgresql://postgres:pass@db.example.supabase.co:5432/postgres",
+    )
+    assert settings.google_embedding_model == "gemini-embedding-001"
+
+
+def test_cohere_api_key_defaults_to_empty() -> None:
+    """No COHERE_API_KEY → optional reranker is disabled, settings still valid."""
+
+    settings = Settings(
+        **_REQUIRED,
+        database_url="postgresql://postgres:pass@db.example.supabase.co:5432/postgres",
+    )
+    assert settings.cohere_api_key == ""
 
 
 def test_splits_comma_separated_origins() -> None:

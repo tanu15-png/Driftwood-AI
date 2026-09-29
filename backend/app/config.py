@@ -25,9 +25,12 @@ class Settings(BaseSettings):
     supabase_service_role_key: str
     database_url: str
     google_api_key: str
-    openai_api_key: str
-    openai_embedding_model: str
-    openai_embedding_dimensions: int
+    # Gemini embedding model; dimensions come from the vector column constant
+    # (app.database.models.constants), not from env — the schema is fixed.
+    google_embedding_model: str = "gemini-embedding-001"
+    # Optional Cohere cross-encoder for Phase 5 retrieval; the reranker is a
+    # no-op (hybrid ranking passes through) when unset.
+    cohere_api_key: str = ""
     # NoDecode skips pydantic-settings' JSON parsing of complex fields so the
     # raw comma-separated string reaches the validator below.
     allowed_origins: Annotated[list[str], NoDecode]

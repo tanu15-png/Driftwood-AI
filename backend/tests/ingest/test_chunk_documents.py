@@ -6,7 +6,9 @@ import pytest
 
 from app.ingest import chunk_documents
 from app.ingest.chunk_documents import (
+    CharEstimateTokenizer,
     chunk_rows,
+    estimate_tokens,
     section_from_headings,
 )
 
@@ -35,20 +37,12 @@ def _row(headings: list[str] | None, text: str = "Apple revenue grew by five per
     return DocChunk(text=text, meta=meta)
 
 
-class _CountingTokenizer:
-    """Stands in for OpenAITokenizer (whose real tokenizer needs network)."""
-
-    def count_tokens(self, text: str) -> int:
-        return len(text) // 4 + 1
-
-    def get_max_tokens(self) -> int:
-        return 800
-
-
 class _FakeHybridChunker:
+    """Stands in for HybridChunker (initialized with CharEstimateTokenizer)."""
+
     def __init__(self, chunks):
         self._chunks = chunks
-        self.tokenizer = _CountingTokenizer()
+        self.tokenizer = CharEstimateTokenizer(max_tokens=chunk_documents.CHUNK_MAX_TOKENS)
 
     def chunk(self, dl_doc):
         return iter(self._chunks)
@@ -72,6 +66,16 @@ def test_section_truncates_to_column_limit() -> None:
     assert long is not None and len(long) <= 200
 
 
+def test_char_estimate_tokenizer_is_conservative() -> None:
+    tokenizer = CharEstimateTokenizer(max_tokens=800)
+    assert tokenizer.count_tokens("") == 0
+    assert tokenizer.count_tokens("abcd" * 100) == 100
+    assert tokenizer.get_max_tokens() == 800
+    # Estimate must over-count real tokens, never under-count (40 chars of
+    # typical English is ~10 real tokens).
+    assert estimate_tokens("The iPhone segment generated revenue of") >= 9
+
+
 def test_chunk_rows_maps_metadata_and_orders_chunks() -> None:
     chunker = _FakeHybridChunker(
         [
@@ -84,7 +88,6 @@ def test_chunk_rows_maps_metadata_and_orders_chunks() -> None:
         entry=_entry(),
         chunker_name="hybrid",
         chunker=chunker,  # type: ignore[arg-type]
-        tokenizer=chunker.tokenizer,  # type: ignore[arg-type]
     )
     assert [row["chunk_index"] for row in rows] == [0, 1]
     assert rows[0]["section"] == "Part I > Item 1"
@@ -94,9 +97,7 @@ def test_chunk_rows_maps_metadata_and_orders_chunks() -> None:
     # The fake chunker's contextualize() prepends the heading chain.
     assert rows[0]["contextualized_text"] == "Part I > Item 1\nFirst chunk text."
     assert rows[1]["contextualized_text"] == "Second chunk text."
-    assert rows[0]["token_count"] == _CountingTokenizer().count_tokens(
-        "Part I > Item 1\nFirst chunk text."
-    )
+    assert rows[0]["token_count"] == estimate_tokens("Part I > Item 1\nFirst chunk text.")
     meta = rows[0]["metadata"]
     assert meta["ticker"] == "AAPL"
     assert meta["fiscal_year"] == 2025
@@ -107,23 +108,6 @@ def test_chunk_rows_maps_metadata_and_orders_chunks() -> None:
     assert meta["num_doc_items"] == 1
 
 
-def test_build_tokenizer_rejects_oversize_target(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _Settings:
-        openai_embedding_model = "text-embedding-3-small"
-        openai_embedding_dimensions = 1536
-
-    monkeypatch.setattr(chunk_documents, "settings", _Settings())
-    with pytest.raises(SystemExit):
-        chunk_documents.build_tokenizer(8191)
-    with pytest.raises(SystemExit):
-        chunk_documents.build_tokenizer(9000)
-
-
-def test_build_tokenizer_rejects_dimension_mismatch(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _Settings:
-        openai_embedding_model = "text-embedding-3-small"
-        openai_embedding_dimensions = 3072
-
-    monkeypatch.setattr(chunk_documents, "settings", _Settings())
-    with pytest.raises(SystemExit):
-        chunk_documents.build_tokenizer(800)
+def test_chunk_target_stays_below_gemini_limit() -> None:
+    """The chunk target must stay under the embedding model's input cap."""
+    assert chunk_documents.CHUNK_MAX_TOKENS < chunk_documents.EMBEDDING_MODEL_TOKEN_LIMIT

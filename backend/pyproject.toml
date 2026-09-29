@@ -4,11 +4,10 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     "alembic==1.20.0",
-    "docling-core[chunking-openai]==2.97.1",
+    "docling-core[chunking]==2.97.1",
     "fastapi==0.141.1",
     "google-genai==2.23.0",
     "httpx==0.28.1",
-    "openai==3.13.0",
     "pgvector==0.5.0",
     "psycopg[binary]==3.3.5",
     "pydantic==2.13.5",
@@ -43,7 +42,7 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
-    "integration: hits network, OpenAI/Gemini, or the live database",
+    "integration: hits network, Gemini/Cohere, or the live database",
 ]
 # Auth/retrieval code is async; run async tests on anyio (stdlib-adjacent,
 # already a FastAPI dependency — no extra plugin needed).
