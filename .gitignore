@@ -18,6 +18,8 @@ build/
 
 # Node / Next.js
 node_modules/
+.pnpm-store/
+/backend/.cache/
 .turbo/
 *.tsbuildinfo
 npm-debug.log*

@@ -8,6 +8,7 @@ For every .htm/.html file under data/downloads/<year>/ this writes:
   data/docling/<year>/<same-stem>.json   DoclingDocument.save_as_json() output
   data/markdown/<year>/<same-stem>.md    export_to_markdown() output
   data/docling/manifest.json             download manifest + docling paths
+  data/markdown/manifest.json            same successful filings + Markdown paths
 
 The JSON documents (not the Markdown) are the input for docling's native
 chunkers, per the docling chunking docs.
@@ -24,19 +25,24 @@ from __future__ import annotations
 import json
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 
-from docling.document_converter import DocumentConverter
-
-from app.ingest.paths import DATA_DIR, DOCLING_DIR, DOWNLOADS_DIR
+from app.ingest.paths import (
+    DOCLING_DIR,
+    DOWNLOADS_DIR,
+    MARKDOWN_DIR,
+    MARKDOWN_MANIFEST,
+)
 
 DOWNLOAD_MANIFEST = DOWNLOADS_DIR / "manifest.json"
 OUTPUT_MANIFEST = DOCLING_DIR / "manifest.json"
-MARKDOWN_DIR = DATA_DIR / "markdown"
 
 HTML_SUFFIXES = {".htm", ".html"}
 
 
 def convert_all() -> dict:
+    from docling.document_converter import DocumentConverter
+
     if not DOWNLOAD_MANIFEST.exists():
         raise SystemExit(f"No download manifest at {DOWNLOAD_MANIFEST}. Run data/download.py first.")
 
@@ -102,6 +108,23 @@ def convert_all() -> dict:
 
     OUTPUT_MANIFEST.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_MANIFEST.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    # The document loader must consume the same successful conversion set
+    # as the chunker, rather than a manifest from a separate Markdown run.
+    markdown_manifest = {
+        **manifest,
+        "format": "markdown",
+        "filings": [
+            {
+                **entry,
+                "markdown_path": Path(entry["docling_path"]).with_suffix(".md").as_posix(),
+            }
+            for entry in manifest["filings"]
+        ],
+    }
+    MARKDOWN_MANIFEST.parent.mkdir(parents=True, exist_ok=True)
+    MARKDOWN_MANIFEST.write_text(
+        json.dumps(markdown_manifest, indent=2) + "\n", encoding="utf-8"
+    )
 
     print(
         f"Converted {len(converted)} file(s) to {DOCLING_DIR} "

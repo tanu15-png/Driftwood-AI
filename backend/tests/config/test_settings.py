@@ -7,17 +7,16 @@ _REQUIRED = {
     "supabase_url": "https://example.supabase.co",
     "supabase_anon_key": "anon",
     "supabase_service_role_key": "service",
-    "google_api_key": "key",
     "allowed_origins": "http://localhost:5173",
 }
 
 
-def test_embedding_model_defaults_to_gemini() -> None:
+def test_embedding_model_defaults_to_local_bge() -> None:
     settings = Settings(
         **_REQUIRED,
         database_url="postgresql://postgres:pass@db.example.supabase.co:5432/postgres",
     )
-    assert settings.google_embedding_model == "gemini-embedding-001"
+    assert settings.embedding_model == "BAAI/bge-small-en-v1.5"
 
 
 def test_cohere_api_key_defaults_to_empty() -> None:

@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
-from google import genai
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -56,7 +55,7 @@ def _chunks_by_ids_sql() -> Any:
 
 def _neighbors_sql() -> Any:
     return text("""
-        SELECT c.id, c.chunk_index, c.chunk_text, c.section
+        SELECT c.id, c.document_id, c.chunk_index, c.chunk_text, c.section, c.page
         FROM document_chunks c
         WHERE c.document_id = :document_id
           AND c.chunk_index BETWEEN :lo AND :hi
@@ -77,7 +76,7 @@ async def hybrid_search(
     session: AsyncSession,
     query: str,
     *,
-    embed_client: Any = None,
+    embed_model: Any = None,
     top_k: int = DEFAULT_TOP_K,
     with_neighbors: bool = False,
     ticker: str | None = None,
@@ -85,27 +84,24 @@ async def hybrid_search(
 ) -> list[dict[str, Any]]:
     """Retrieve the top-k passages for a query.
 
-    embed_client is a google.genai.Client; created lazily when omitted so the
+    embed_model is a local CPU model; created in a worker thread when omitted so the
     function stays testable without network. When COHERE_API_KEY is unset,
     results keep their RRF order (score_source="rrf").
     """
-    if embed_client is None:
-        embed_client = genai.Client(api_key=settings.google_api_key)
+    if not 1 <= top_k <= 100:
+        raise ValueError("top_k must be between 1 and 100")
+    if not query.strip():
+        raise ValueError("query must not be empty")
+    if embed_model is None:
+        embed_model = await asyncio.to_thread(embeddings.create_model)
 
     # 1. Dense: embed the query with the same model/task as retrieval queries.
-    query_vector = await embeddings.embed_query(embed_client, query)
+    query_vector = await embeddings.embed_query(embed_model, query)
 
-    # 2. Both retrievers run in parallel; either alone is still a ranking.
-    dense_task = queries.dense_search(session, query_vector)
-    fts_task = queries.full_text_search(session, query)
-    dense_ids, fts_ids = await asyncio.gather(dense_task, fts_task)
-
-    # Optional corpus narrowing happens before fusion so the fused pool is
-    # already ticker/year-scoped.
-    if ticker or fiscal_year is not None:
-        dense_ids, fts_ids = await _filter_by_corpus(
-            session, dense_ids, fts_ids, ticker, fiscal_year
-        )
+    # AsyncSession owns one connection and cannot execute concurrent queries.
+    filters = {"ticker": ticker, "fiscal_year": fiscal_year}
+    dense_ids = await queries.dense_search(session, query_vector, **filters)
+    fts_ids = await queries.full_text_search(session, query, **filters)
 
     # 3. Fuse ranks (RRF), then take the rerank pool.
     fused = reciprocal_rank_fusion(
@@ -115,7 +111,7 @@ async def hybrid_search(
     if not fused:
         return []
 
-    candidate_ids = [UUID(id_) for id_, _ in fused[:RERANK_CANDIDATES]]
+    candidate_ids = [UUID(id_) for id_, _ in fused]
     chunks = await _fetch_chunks(session, candidate_ids)
 
     # 4. Rerank the candidate texts with the cross-encoder when configured.
@@ -126,9 +122,7 @@ async def hybrid_search(
     present_ids = [id_ for id_ in candidate_ids if id_ in chunks]
     rrf_scores = {UUID(id_): score for id_, score in fused}
     reranked = (
-        await reranker.rerank(query, texts, top_k)
-        if settings.cohere_api_key
-        else None
+        await reranker.rerank(query, texts, top_k) if settings.cohere_api_key else None
     )
     if reranked is None:
         for id_ in present_ids:
@@ -159,6 +153,7 @@ def _to_chunk(row: dict[str, Any], score: float, source: str) -> RetrievedChunk:
         score=score,
         score_source=source,
         metadata={
+            **(row["metadata"] or {}),
             "ticker": row["ticker"],
             "company": row["company"],
             "filing_type": row["filing_type"],
@@ -166,7 +161,6 @@ def _to_chunk(row: dict[str, Any], score: float, source: str) -> RetrievedChunk:
             "fiscal_year": row["fiscal_year"],
             "accession_number": row["accession_number"],
             "source_url": row["source_url"],
-            **(row["metadata"] or {}),
         },
     )
 
@@ -185,7 +179,9 @@ def _chunk_dict(chunk: RetrievedChunk) -> dict[str, Any]:
     }
 
 
-async def _fetch_neighbors(session: AsyncSession, chunk: RetrievedChunk) -> list[dict[str, Any]]:
+async def _fetch_neighbors(
+    session: AsyncSession, chunk: RetrievedChunk
+) -> list[dict[str, Any]]:
     lo = chunk.chunk_index - NEIGHBOR_WINDOW
     hi = chunk.chunk_index + NEIGHBOR_WINDOW
     result = await session.execute(
@@ -193,38 +189,14 @@ async def _fetch_neighbors(session: AsyncSession, chunk: RetrievedChunk) -> list
         {"document_id": str(chunk.document_id), "lo": lo, "hi": hi},
     )
     return [
-        {"chunk_index": row.chunk_index, "section": row.section, "chunk_text": row.chunk_text}
+        {
+            "id": str(row.id),
+            "document_id": str(row.document_id),
+            "page": row.page,
+            "chunk_index": row.chunk_index,
+            "section": row.section,
+            "chunk_text": row.chunk_text,
+        }
         for row in result
         if row.id != chunk.id
     ]
-
-
-async def _filter_by_corpus(
-    session: AsyncSession,
-    dense_ids: list[UUID],
-    fts_ids: list[UUID],
-    ticker: str | None,
-    fiscal_year: int | None,
-) -> tuple[list[UUID], list[UUID]]:
-    """Narrow both candidate lists to chunks whose document matches the filter."""
-    conditions = []
-    params: dict[str, Any] = {}
-    if ticker:
-        conditions.append("s.ticker = :ticker")
-        params["ticker"] = ticker.upper()
-    if fiscal_year is not None:
-        conditions.append("s.fiscal_year = :fiscal_year")
-        params["fiscal_year"] = fiscal_year
-    sql = text(f"""
-        SELECT c.id FROM document_chunks c
-        JOIN source_documents s ON s.id = c.document_id
-        WHERE c.id = ANY(:ids) AND {" AND ".join(conditions)}
-    """)
-    allowed = {
-        row.id
-        for row in await session.execute(sql, {"ids": dense_ids + fts_ids, **params})
-    }
-    return (
-        [id_ for id_ in dense_ids if id_ in allowed],
-        [id_ for id_ in fts_ids if id_ in allowed],
-    )

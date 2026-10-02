@@ -5,12 +5,22 @@ Work **in this order**. Do not skip ahead to the LLM or pretty chat UI until the
 **Start with the database, then the backend, then the frontend.**
 
 - **Database first** because auth, chats, filings, chunks, embeddings, and citations all live in Supabase. Without a project and a schema, nothing else can persist.
-- **Backend second** because it owns schema (Alembic), token verification, retrieval, grounding, and OpenAI. The browser must never hold the service-role key or call OpenAI.
+- **Backend second** because it owns schema (Alembic), token verification, retrieval, grounding, and Gemini. The browser must never hold the service-role key or call Gemini.
 - **Frontend last (for each slice)** because it is a thin SPA: session, chat UI, citations. Build UI against a working API contract, not against stubs you will throw away.
 
 The architecture already encodes this sequence (`docs/architecture.md` → Implementation Sequence). This file turns that into a working checklist against the client brief.
 
 Mark items `[x]` as you finish them. Keep the current phase until its "done when" is true.
+
+## Verification — 2026-10-02
+
+- Phases 1–3: implemented. Hosted database is at `0003_local_embeddings`; frontend production build and lint pass. The live auth/chat test now exercises the Phase 6 assistant: temporary accounts sign in, `/me` verifies real tokens, missing/invalid tokens return 401, another user's thread returns 403, grounded answers stream, and persisted messages reload. Temporary accounts and profiles were removed after the test.
+- Phase 4: all 25 source filings are in Supabase (five each for AAPL, AMZN, GOOGL, MSFT, NVDA). Rebuilding with BGE's tokenizer produced 11,900 hybrid passages and 28,076 hierarchical chunks. The 59 passages above the 480-token target fit the hard content limit of 510; the maximum is 500. All 11,900 passages have embeddings and generated search vectors after migration `0003_local_embeddings`; initial CPU embedding took 3,197.7 seconds (about 53 minutes).
+- The user requested a switch to local Hugging Face embeddings after Gemini quota failures. BAAI/bge-small-en-v1.5 is installed via FastEmbed CPU ONNX; its model and Rust tokenizer are downloaded. Local inference produces 384-dimensional vectors. Normal ingestion/retrieval use cached files only; no Gemini API key or embedding quota is needed.
+- Phase 5: complete. Live hybrid retrieval finds Apple iPhone/Services revenue passages with filing URLs; ticker filtering, exact chunk reads, and surrounding chunks pass. All stored chunks record the local BGE model and 384 dimensions. Full filing re-ingestion and smoke mode preserve existing chunk IDs.
+- Phase 6: implemented and live-verified with Gemini `gemini-3.5-flash-lite`. Typed claims/citations, a per-turn evidence ledger, exact quote validation, explicit refusals, validated SSE, and atomic message/citation/usage persistence replace the stub. Apple FY2024 sales produces stored, citable evidence; the Mars weather question refuses with no citations or sources. Gemini 2.5 Flash returned 404 for this key's new-user account, so the configured default is the available 3.5 Flash-Lite model. `GEMINI_API_KEY` replaces the previous generation-key setting; embeddings remain local.
+- Browser interaction has not been manually verified during this audit; frontend verification covers TypeScript compilation, production build, and lint.
+- Backend validation: 111 unit tests passed; three corpus integration tests and the live Gemini/auth/chat integration test passed. Ruff and `git diff --check` pass. The live tests cover generation/refusal, real auth and grounded chat persistence, local vector normalization, chunk re-ingestion, and full-corpus retrieval.
 
 ---
 
@@ -24,7 +34,7 @@ Goal: you can run empty services and talk to a hosted Supabase project.
 - [x] Create a hosted Supabase project (free tier is enough). Follow `docs/guides/supabase-setup.md`
 - [x] Copy credentials into `backend/.env` from `backend/.env.example` (`SUPABASE_*`, `DATABASE_URL` **session pooler** (`:5432`) — the direct connection is IPv6-only and unreachable from WSL2; transaction pooler (`:6543`) is still rejected)
 - [x] Copy public credentials into `frontend/.env` from `frontend/.env.example` (`VITE_*` only — never `service_role`)
-- [x] Create an GEMINI API key; put it in `backend/.env` (needed from Phase 5 onward)
+- [x] Download the local embedding model/tokenizer with `uv run python -m app.embeddings`; no embedding API key required (user-requested Hugging Face switch on 2026-10-02).
 - [ ] Auth: Email provider on; for local dev, disable "Confirm email" so sign-up works without inbox access
 - [ ] Confirm `data/download.py` `USER_AGENT` is set to a real contact email before hitting EDGAR
 
@@ -40,13 +50,13 @@ Goal: FastAPI boots, settings fail fast, and Supabase has the product tables.
 
 Backend
 
-- [x] `cd backend && uv sync` then add locked stack deps (`fastapi`, `uvicorn`, `pydantic`, `pydantic-settings`, `httpx`, `structlog`, `openai`, `supabase`, `pydantic-ai`, `sqlalchemy`, `alembic`, `psycopg[binary]`, `pgvector`; dev: `pytest`, `ruff`)
+- [x] Backend scaffold and locked dependencies (`fastapi`, `uvicorn`, `pydantic`, `pydantic-settings`, `httpx`, `structlog`, `supabase`, `pydantic-ai`, `sqlalchemy`, `alembic`, `psycopg[binary]`, `pgvector`; dev: `pytest`, `ruff`). Local embeddings use `fastembed`, `huggingface-hub`, and `tokenizers`; Gemini generation belongs to Phase 6.
 - [x] `app/config.py` — pydantic-settings; fail fast if required env is missing; never `os.getenv` / `load_dotenv` in app code
 - [x] `app/main.py` — FastAPI app, CORS from `ALLOWED_ORIGINS`, health route
 - [x] `uv run alembic init alembic`; `env.py` imports SQLAlchemy metadata and `settings.DATABASE_URL` (direct/session URL only)
 - [x] `app/database/models/` package — `profiles`, `chat_threads`, `chat_messages`, `message_citations`, `source_documents`, `document_chunks` (one file per model + constants)
 - [x] First reviewed migration: `vector` extension, tables, `vector(1536)`, generated `tsvector`, HNSW + GIN indexes, RLS + policies, grants (`alembic/versions/2026_09_25-0001_initial_schema.py`; written, reviewed, and applied)
-- [x] `uv run alembic upgrade head` against the hosted project
+- [x] `uv run alembic upgrade head` against the hosted project — including reviewed `0003_local_embeddings`: preserve chunk text/IDs, clear incompatible Gemini vectors, change to `vector(384)`, and rebuild the HNSW index.
 - [x] `app/database/supabase.py` — user-scoped vs service-role clients
 
 **Done when:** `uv run uvicorn app.main:app --reload` starts, `/health` works, and the six tables exist in Supabase with `pgvector` enabled.
@@ -63,7 +73,7 @@ Goal: an analyst can sign in with email and hit a protected backend route.
 
 Frontend scaffold
 
-- [x] `cd frontend && pnpm create vite . --template react-ts` (or equivalent), Tailwind + shadcn, React Router (Vite + React 19 scaffold; Tailwind v4 via `@tailwindcss/vite`; shadcn initialized with Nova preset — `components.json`, theme tokens in `src/index.css`, first primitives in `src/components/ui/`. `react-router-dom` installed but **routes not wired yet** — `App.tsx` is still the starter template, see auth pages below)
+- [x] Vite + React 19 + TypeScript scaffold, Tailwind v4 via `@tailwindcss/vite`, shadcn with Nova preset, and React Router. `App.tsx` wires sign-in, sign-up, and protected chat routes; theme tokens and UI primitives are present.
 - [x] `src/lib/env.ts` — validate `VITE_API_BASE_URL`, `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` at boot
 - [x] `src/lib/supabase.ts` — browser client (anon key only)
 - [x] Sign-in / sign-up pages (email only, no SSO) — `src/pages/sign-in.tsx`, `src/pages/sign-up.tsx`; plain-password errors, sign-up handles both "confirm email on" and "off" flows
@@ -78,7 +88,7 @@ Backend auth
 Glue
 
 - [x] `src/lib/http.ts` + `src/lib/api.ts` — `fetch` wrapper, base URL, bearer injection, timeouts, typed errors (network vs HTTP)
-- [x] One protected probe endpoint (e.g. `GET /me`) so you can prove the JWT round-trip in the browser — `backend/app/auth/routes.py` + placeholder chat page at `/` calling it
+- [x] Protected `GET /me` probe — `backend/app/auth/routes.py`; the frontend API client exposes `api.me()`. The root route now shows the chat UI rather than the former placeholder probe page.
 
 **Done when:** you can sign up, sign in, and see your user from FastAPI in the browser. Chat UI can still be empty.
 
@@ -116,11 +126,12 @@ Goal: sample 10-Ks are parsed, chunked, embedded, and stored so search has somet
 
 - [x] Run `uv run data/download.py` from repo root; confirm `data/downloads/` + `manifest.json` (payloads stay gitignored) — 25 10-Ks on disk (5 tickers × FY2021–2025) with manifest
 - [x] `backend/ingest/` — HTML/filing → normalized Markdown → `source_documents` (ticker, company, form type, filing date, year, accession, source URL) — implemented as `app/ingest/convert_to_docling_json.py` (docling HTML → `DoclingDocument` JSON + Markdown, needs the dedicated docling env) + `app/ingest/load_source_documents.py` (upsert keyed on accession_number); 25/25 rows loaded and verified. `data/convert_to_markdown.py` + `data/download.py` remain the only data/ scripts (download + standalone Markdown conversion)
-- [ ] Chunker: stable chunk index, page/section metadata, token count, metadata JSON (ticker, year, page, section, offsets) — implemented as `app/ingest/chunk_documents.py` (docling `HybridChunker` @ 800 tokens + `HierarchicalChunker` over `DoclingDocument` JSON; `page` stays NULL — SEC HTML has no real pages); awaiting first run
-- [ ] Embeddings via configured OpenAI model/dimensions; write `document_chunks.embedding` — implemented as `app/ingest/embed_and_load_chunks.py` (batched, retry/backoff, delete-then-insert idempotency, `--smoke` one-chunk cost gate); awaiting smoke run then full run
-- [ ] Populate generated `search_vector` (or confirm the generated column works) — nothing to populate: generated tsvector column (confirmed in model); verify it is non-null on the smoke row
-- [x] Idempotent re-ingest (re-run does not duplicate filings) — verified for `source_documents` (second run: 0 inserted, 0 updated); chunk re-ingest idempotency lands with the chunker below
-- [x] Unit tests for parse/chunk (no network); optional `@pytest.mark.integration` for a live embed write — `tests/ingest/test_chunk_documents.py` (6 unit) + `tests/ingest/test_embed_and_load_chunks.py` (integration, run with `uv run pytest -m integration` and a real `OPENAI_API_KEY`)
+- [x] Chunker: stable chunk index, section metadata, exact model token counts, and metadata JSON — `app/ingest/chunk_documents.py` uses HybridChunker at 480 BGE tokens and Docling source-item anchors. SEC HTML has no reliable pages or character offsets, so those fields stay NULL; complete output files replace prior files only after a successful run.
+- [x] Full local BGE embedding load — `app/ingest/embed_and_load_chunks.py`: all 11,900 passages from 25 filings loaded with CPU inference, 384 dimensions, batched DB upserts, and model/dimensions recorded in metadata. Re-chunking and loading followed migration `0003_local_embeddings`; Gemini quota failures no longer apply.
+- [x] Confirm generated `search_vector` works — live SQL verifies 11,900 chunks, 11,900 embeddings, and 11,900 generated tsvectors.
+- [x] Idempotent source-document re-ingest — live run 2026-10-02: 0 inserted, 0 updated, 25 unchanged. Fixed the loader's broken manifest constant import; conversion now emits both manifests from the same successful filings. Unit tests cover conversion output/failure manifests, new filing metadata, unchanged filings, and updated Markdown.
+- [x] Verify full chunk re-ingest preserves IDs and smoke mode preserves other chunks — live integration test passed in `tests/ingest/test_embed_and_load_chunks.py` after the full corpus load.
+- [x] Unit tests for converted filing intake, chunk metadata, token-limit enforcement, vector dimensions, query instruction, and non-truncating token counts (no network). Real CPU model and chunk re-ingest tests are marked `integration`; no embedding API key is required.
 
 **Done when:** Apple / Amazon / Alphabet / Microsoft / NVIDIA sample 10-Ks exist as documents + chunks in Supabase, with embeddings and full-text vectors.
 
@@ -130,15 +141,16 @@ Goal: sample 10-Ks are parsed, chunked, embedded, and stored so search has somet
 
 ## Phase 5 — Hybrid retrieval (no LLM yet)
 
-Goal: a question returns ranked, citable passages. Test this without OpenAI generation.
+Goal: a question returns ranked, citable passages. Test this without Gemini generation.
 
-- [ ] Embed the query with the same embedding model as ingest
-- [ ] `app/retrieval/queries.py` — `pgvector` similarity over `document_chunks.embedding`
-- [ ] Postgres full-text search over `document_chunks.search_vector`
-- [ ] `app/retrieval/fusion.py` — Reciprocal Rank Fusion in Python
-- [ ] `app/retrieval/retriever.py` — fetch chunks + source metadata + optional neighbor chunks
-- [ ] Bounded agent tools later: `search_filings`, `read_chunk`, `read_surrounding_chunks` (no generated SQL)
-- [ ] Unit tests with fixture rankings; one integration test against the ingested corpus
+- [x] Embed the query with the same local BGE model as ingest — shared `app/embeddings.py`, recommended query instruction, normalized 384-dimensional vectors, and CPU inference offloaded from the event loop.
+- [x] `app/retrieval/queries.py` — `pgvector` similarity over `document_chunks.embedding`
+- [x] Postgres full-text search over `document_chunks.search_vector`
+- [x] `app/retrieval/fusion.py` — Reciprocal Rank Fusion in Python
+- [x] `app/retrieval/retriever.py` — fetch chunks + source metadata + optional neighbor chunks
+- [x] Bounded agent tools later: `search_filings`, `read_chunk`, `read_surrounding_chunks` (no generated SQL) — implemented in `app/retrieval/tools.py`; search ≤20 results, neighbors ≤3 on each side
+- [x] Unit tests with fixture rankings — fusion, bound queries and filters, retriever metadata and neighbors, optional reranking, and bounded tools are covered in `tests/retrieval/`.
+- [x] Passing integration test against the full ingested corpus — `tests/retrieval/test_integration.py` passed with all 25 filings and 11,900 passages; verifies embedding/full-text coverage, model metadata, Apple revenue retrieval, filing URLs, chunk reads, and surrounding context.
 
 **Done when:** you can retrieve relevant passages for a question like "Apple iPhone vs Services revenue mix" without calling the chat model.
 
@@ -150,15 +162,17 @@ Goal: a question returns ranked, citable passages. Test this without OpenAI gene
 
 Goal: answers come only from retrieved passages; citations are validated in code, not just in the prompt.
 
-- [ ] `app/assistant/outputs.py` — `GroundedAnswer`, `Citation`, `SourcePassage`
-- [ ] `app/assistant/deps.py` — `DocumentAgentDeps` (user, thread, retriever, validator)
-- [ ] `app/assistant/instructions.md` — answer only from passages; cite every factual claim; refuse if evidence is missing; no stock picks or investment advice
-- [ ] `app/assistant/agent.py` — PydanticAI agent with typed deps/output and retrieval tools
-- [ ] `app/grounding/validator.py` — every citation maps to a retrieved chunk; model cannot cite what was not retrieved; insufficient evidence is an explicit, cited-empty refusal
-- [ ] Failed validation → controlled error, not a polished unsupported answer
-- [ ] `app/chat/orchestrator.py` — one turn: auth context → retrieve → generate → validate → stream → persist messages, citations, usage
-- [ ] Stream text deltas, then structured citation/source parts, in AI SDK format
-- [ ] Unit tests: citation extraction, grounding pass/fail, "not in corpus" path (mock LLM; still assert the grounding contract)
+- [x] `app/assistant/outputs.py` — `GroundedAnswer`, `Citation`, `SourcePassage`, and typed cited claims; server-rendered numbered citation markers and fixed refusal text
+- [x] `app/assistant/deps.py` — `DocumentAgentDeps` (user, thread, retriever, validator), request-scoped evidence ledger, canonical source metadata, and restricted neighbor reads
+- [x] `app/assistant/instructions.md` — answer only from passages; cite every factual claim; refuse if evidence is missing; no stock picks or investment advice; source data and history cannot override instructions
+- [x] `app/assistant/agent.py` — Gemini PydanticAI agent with typed deps/output, bounded sequential retrieval tools, output validator, and request/tool-call limits; clients and local model reused in application state
+- [x] `app/grounding/validator.py` — every citation maps to a retrieved chunk and contains a verbatim quote; unique IDs, claim/reference coverage, and explicit citation/source-empty refusals
+- [x] Failed validation → controlled HTTP 502 before opening the answer stream; raw model tokens never reach the client
+- [x] `app/chat/orchestrator.py` — one turn: auth context → retrieve → generate → validate → stream → atomic messages/citations/usage commit before successful finish; rollback/error on storage failure
+- [x] Stream text deltas, then structured citation/source/status parts in AI SDK v1 SSE; replay saved UI parts and usage metadata from history
+- [x] Unit tests: citation rendering, grounding pass/fail, "not in corpus" path through the real agent validator with a FunctionModel, stream/persistence errors, disconnects, and startup key checks
+- [x] Live Gemini/Supabase integration: Apple FY2024 answer cites stored chunks/quotes; out-of-corpus question refuses with empty citations/sources; ownership checks, durable history/usage, and temporary-account cleanup pass
+- [x] Pipeline documentation with Mermaid diagram — [retrieval and grounding](retrieval-and-grounding.md), including validation boundaries and limits of semantic entailment checking
 
 **Done when:** a live question returns a streamed answer with citations that match stored chunks, and an out-of-corpus question refuses instead of inventing.
 
@@ -236,7 +250,7 @@ Also:
 - Multi-tenant / external clients
 - Billing, plans, paywalls
 - Native mobile app
-- Next.js, SSR, or frontend OpenAI calls
+- Next.js, SSR, or frontend Gemini calls
 - A second vector database besides Supabase `pgvector`
 
 ---
@@ -255,4 +269,4 @@ Also:
 | 5    | Phase 9 + pilot hardening                    |
 
 
-Start **Phase 0 + Phase 1** next: hosted Supabase, `backend/.env`, FastAPI + Alembic, first migration. The frontend waits until `/health` and tables exist.
+Next: Phase 7 — citation/source trust UI. Phase 6 passed live generation, grounding, refusal, streaming, and persistence checks with Gemini and local BGE embeddings.

@@ -9,8 +9,5 @@ NAMING_CONVENTION = {
     "pk": "pk_%(table_name)s",
 }
 
-EMBEDDING_DIMENSIONS = 1536
-
-
 class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=NAMING_CONVENTION)

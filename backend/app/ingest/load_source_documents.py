@@ -22,16 +22,16 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database.models import SourceDocument
-from app.ingest.paths import COMPANY_NAMES, MANIFEST_PATH, MARKDOWN_DIR
+from app.ingest.paths import COMPANY_NAMES, MARKDOWN_DIR, MARKDOWN_MANIFEST
 
 
 def upsert_documents() -> dict:
-    if not MANIFEST_PATH.exists():
+    if not MARKDOWN_MANIFEST.exists():
         raise SystemExit(
-            f"No markdown manifest at {MANIFEST_PATH}. Run data/convert_to_markdown.py first."
+            f"No markdown manifest at {MARKDOWN_MANIFEST}. Run app.ingest.convert_to_docling_json first."
         )
 
-    manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    manifest = json.loads(MARKDOWN_MANIFEST.read_text(encoding="utf-8"))
     entries = manifest["filings"]
     if not entries:
         raise SystemExit("Manifest has no filings — nothing to load.")

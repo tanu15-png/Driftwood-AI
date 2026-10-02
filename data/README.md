@@ -23,14 +23,19 @@ chunks/ holds chunk JSONL produced by app.ingest.chunk_documents:
     chunks_hierarchical.jsonl   HierarchicalChunker, one chunk per element
 
 Pipeline (run from backend/ in this order; every stage is safe to re-run):
+  First: uv run python -m app.embeddings (one-time model/tokenizer download)
+         uv run alembic upgrade head (384-dimensional local embedding schema)
   1. ~/.venvs/docling-tools/bin/python -m app.ingest.convert_to_docling_json
      (docling conversion must run in the dedicated env — the backend venv's
      docling import crashes on its torch/Python combo)
   2. uv run python -m app.ingest.load_source_documents
   3. uv run python -m app.ingest.chunk_documents
   4. uv run python -m app.ingest.embed_and_load_chunks --smoke
-     (embeds ONE chunk and prints the inserted row back — verify before cost)
+     (embeds ONE chunk locally and prints the inserted row back)
   5. uv run python -m app.ingest.embed_and_load_chunks
+
+Embeddings use BAAI/bge-small-en-v1.5 locally on CPU, with no API key or inference
+quota. Hybrid chunks target 480 model tokens; vectors have 384 dimensions.
 
 Page numbers: SEC 10-K HTML files have no real page structure, so docling
 emits no page provenance for them and document_chunks.page stays NULL

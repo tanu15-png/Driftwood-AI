@@ -43,6 +43,9 @@ class FakeSession:
     async def commit(self) -> None:
         self.commit_count += 1
 
+    async def flush(self) -> None:
+        pass
+
     async def refresh(self, obj) -> None:
         pass
 

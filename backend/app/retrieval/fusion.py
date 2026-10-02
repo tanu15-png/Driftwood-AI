@@ -27,9 +27,9 @@ def reciprocal_rank_fusion(
     scores: dict[str, float] = defaultdict(float)
     for ranking in rankings:
         seen: set[str] = set()
-        for rank, id_ in enumerate(ranking):
+        for id_ in ranking:
             if id_ in seen:
                 continue
             seen.add(id_)
-            scores[id_] += 1.0 / (RRF_K + rank + 1)
-    return sorted(scores.items(), key=lambda item: (-item[1], item[0]))[:limit]
+            scores[id_] += 1.0 / (RRF_K + len(seen))
+    return sorted(scores.items(), key=lambda item: -item[1])[:limit]

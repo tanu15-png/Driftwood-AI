@@ -5,8 +5,6 @@ Stream wire format: AI SDK UI message stream v1 (SSE) — `start`, `start-step`,
 which `useChat` + `DefaultChatTransport` consume directly.
 """
 
-import asyncio
-import json
 from typing import Annotated, Any
 from uuid import UUID, uuid4
 
@@ -14,10 +12,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.assistant.runtime import AssistantRuntime, get_runtime
 from app.auth import CurrentUser, GetSession, get_current_user
 from app.chat import messages as messages_lib
+from app.chat.orchestrator import prepare_turn, stream_turn
 from app.database import chats
-from app.database.models import ChatMessage, MessageRole
 
 router = APIRouter(tags=["chat"])
 
@@ -82,44 +81,12 @@ class ChatStreamRequest(BaseModel):
     messages: list[dict[str, Any]]
 
 
-# Kept tiny; tests monkeypatch it to 0.
-_STREAM_DELAY_SECONDS = 0.02
-
-
-def _stub_reply(user_text: str) -> str:
-    return (
-        f"Stub reply (Phase 3) — you said: “{user_text}”. "
-        "Grounded answers with citations arrive in Phase 6."
-    )
-
-
-def _sse(payload: dict[str, Any]) -> str:
-    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-
-
-_DONE = "data: [DONE]\n\n"
-
-
-async def _stub_stream(assistant_id: UUID, text: str):
-    """Yield the v1 stream parts for `text`, word by word."""
-    yield _sse({"type": "start", "messageId": str(assistant_id)})
-    yield _sse({"type": "start-step"})
-    text_id = "t0"
-    yield _sse({"type": "text-start", "id": text_id})
-    for word in text.split(" "):
-        yield _sse({"type": "text-delta", "id": text_id, "delta": word + " "})
-        await asyncio.sleep(_STREAM_DELAY_SECONDS)
-    yield _sse({"type": "text-end", "id": text_id})
-    yield _sse({"type": "finish-step"})
-    yield _sse({"type": "finish"})
-    yield _DONE
-
-
 @router.post("/chat/stream")
 async def chat_stream(
     payload: ChatStreamRequest,
     user: Annotated[CurrentUser, Depends(get_current_user)],
     session: GetSession,
+    runtime: Annotated[AssistantRuntime, Depends(get_runtime)],
 ) -> StreamingResponse:
     # Ownership + validation happen before the stream opens, so errors reach
     # the client as normal HTTP status codes, not mid-stream error parts.
@@ -131,31 +98,10 @@ async def chat_stream(
     except messages_lib.InvalidUIMessage as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
 
-    assistant_id = uuid4()
-    reply_text = _stub_reply(internal.content)
-
-    async def event_stream():
-        async for chunk in _stub_stream(assistant_id, reply_text):
-            yield chunk
-        # Stream completed successfully — now persist the turn. A client
-        # disconnect raises out of the generator and skips this block.
-        user_row = ChatMessage(
-            thread_id=thread.id,
-            role=MessageRole.USER,
-            content=internal.content,
-            ui_message=payload.messages[-1],
-        )
-        assistant_row = ChatMessage(
-            id=assistant_id,
-            thread_id=thread.id,
-            role=MessageRole.ASSISTANT,
-            content=reply_text,
-            ui_message=messages_lib.assistant_ui_message(assistant_id, reply_text),
-        )
-        await chats.persist_turn(session, thread, user_row, assistant_row)
+    turn = await prepare_turn(session, user, thread.id, internal.content, runtime)
 
     return StreamingResponse(
-        event_stream(),
+        stream_turn(session, thread, payload.messages[-1], internal.content, uuid4(), turn),
         media_type="text/event-stream",
         headers={
             "x-vercel-ai-ui-message-stream": "v1",

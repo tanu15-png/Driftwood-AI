@@ -11,12 +11,10 @@ def test_fuses_two_identical_rankings() -> None:
 
 
 def test_item_in_both_lists_beats_item_in_one() -> None:
-    fused = reciprocal_rank_fusion(
-        [["a", "b"], ["c", "a"]], limit=10
-    )
+    fused = reciprocal_rank_fusion([["a", "b"], ["c", "a"]], limit=10)
     scores = dict(fused)
     # "a" appears in both lists, so it fuses to the top.
-    assert list(scores) [0] == "a"
+    assert next(iter(scores)) == "a"
     assert scores["a"] > scores["b"]
     assert scores["a"] > scores["c"]
 
@@ -43,3 +41,13 @@ def test_duplicates_within_a_list_ignored() -> None:
 def test_empty_inputs() -> None:
     assert reciprocal_rank_fusion([], limit=5) == []
     assert reciprocal_rank_fusion([[], []], limit=5) == []
+
+
+def test_ties_preserve_first_appearance() -> None:
+    assert [id_ for id_, _ in reciprocal_rank_fusion([["z"], ["a"]], 2)] == ["z", "a"]
+
+
+def test_duplicates_do_not_change_later_ranks() -> None:
+    assert reciprocal_rank_fusion([["a", "a", "b"]], 2) == reciprocal_rank_fusion(
+        [["a", "b"]], 2
+    )

@@ -17,11 +17,14 @@ DENSE_CANDIDATES = 100
 FTS_CANDIDATES = 100
 
 # Cosine distance (pgvector vector_cosine_ops, matches the HNSW index) —
-# vectors come back already L2-normalized from Gemini embeddings.
+# vectors come back already L2-normalized from the local BGE model.
 _DENSE_SQL = text("""
-    SELECT id
-    FROM document_chunks
+    SELECT c.id
+    FROM document_chunks c
+    JOIN source_documents s ON s.id = c.document_id
     WHERE embedding IS NOT NULL
+      AND (CAST(:ticker AS text) IS NULL OR s.ticker = :ticker)
+      AND (CAST(:fiscal_year AS integer) IS NULL OR s.fiscal_year = :fiscal_year)
     ORDER BY embedding <=> (:query_vector)::vector
     LIMIT :limit
 """)
@@ -29,25 +32,52 @@ _DENSE_SQL = text("""
 # websearch_to_tsquery: analyst-friendly syntax ("iPhone vs Services revenue",
 # quoted phrases, OR, -exclusions) without writing tsquery expressions.
 _FTS_SQL = text("""
-    SELECT id
-    FROM document_chunks
-    WHERE search_vector @@ websearch_to_tsquery('english', :query)
+    SELECT c.id
+    FROM document_chunks c
+    JOIN source_documents s ON s.id = c.document_id
+    WHERE (CAST(:ticker AS text) IS NULL OR s.ticker = :ticker)
+      AND (CAST(:fiscal_year AS integer) IS NULL OR s.fiscal_year = :fiscal_year)
+      AND search_vector @@ websearch_to_tsquery('english', :query)
     ORDER BY ts_rank_cd(search_vector, websearch_to_tsquery('english', :query)) DESC
     LIMIT :limit
 """)
 
 
 async def dense_search(
-    session: AsyncSession, query_vector: list[float], limit: int = DENSE_CANDIDATES
+    session: AsyncSession,
+    query_vector: list[float],
+    limit: int = DENSE_CANDIDATES,
+    *,
+    ticker: str | None = None,
+    fiscal_year: int | None = None,
 ) -> list[UUID]:
     result = await session.execute(
-        _DENSE_SQL, {"query_vector": str(query_vector), "limit": limit}
+        _DENSE_SQL,
+        {
+            "query_vector": str(query_vector),
+            "limit": limit,
+            "ticker": ticker.upper() if ticker else None,
+            "fiscal_year": fiscal_year,
+        },
     )
     return [row.id for row in result]
 
 
 async def full_text_search(
-    session: AsyncSession, query: str, limit: int = FTS_CANDIDATES
+    session: AsyncSession,
+    query: str,
+    limit: int = FTS_CANDIDATES,
+    *,
+    ticker: str | None = None,
+    fiscal_year: int | None = None,
 ) -> list[UUID]:
-    result = await session.execute(_FTS_SQL, {"query": query, "limit": limit})
+    result = await session.execute(
+        _FTS_SQL,
+        {
+            "query": query,
+            "limit": limit,
+            "ticker": ticker.upper() if ticker else None,
+            "fiscal_year": fiscal_year,
+        },
+    )
     return [row.id for row in result]

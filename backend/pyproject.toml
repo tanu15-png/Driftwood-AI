@@ -6,8 +6,9 @@ dependencies = [
     "alembic==1.20.0",
     "docling-core[chunking]==2.97.1",
     "fastapi==0.141.1",
-    "google-genai==2.23.0",
+    "fastembed==0.8.1",
     "httpx==0.28.1",
+    "huggingface-hub==1.32.0",
     "pgvector==0.5.0",
     "psycopg[binary]==3.3.5",
     "pydantic==2.13.5",
@@ -16,6 +17,7 @@ dependencies = [
     "sqlalchemy==2.0.52",
     "structlog==26.1.0",
     "supabase==2.31.0",
+    "tokenizers==0.23.2",
     "uvicorn==0.53.0",
 ]
 
@@ -42,7 +44,7 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
-    "integration: hits network, Gemini/Cohere, or the live database",
+    "integration: runs the real local model, optional Cohere, or the live database",
 ]
 # Auth/retrieval code is async; run async tests on anyio (stdlib-adjacent,
 # already a FastAPI dependency — no extra plugin needed).

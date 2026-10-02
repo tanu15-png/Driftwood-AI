@@ -34,7 +34,7 @@ async def test_rerank_empty_documents_returns_empty(
 
 
 async def test_rerank_posts_payload_and_maps_results(
-    monkeypatch: pytest.MonkeyPatch, 
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(reranker.settings, "cohere_api_key", "key")
     captured: dict = {}
@@ -43,7 +43,12 @@ async def test_rerank_posts_payload_and_maps_results(
         captured["url"] = url
         captured["json"] = json
         return _FakeResponse(
-            {"results": [{"index": 1, "relevance_score": 0.9}, {"index": 0, "relevance_score": 0.1}]}
+            {
+                "results": [
+                    {"index": 1, "relevance_score": 0.9},
+                    {"index": 0, "relevance_score": 0.1},
+                ]
+            }
         )
 
     monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)

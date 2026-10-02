@@ -90,22 +90,24 @@ def stub_pipeline(monkeypatch: pytest.MonkeyPatch):
     Tests set calls["dense_ids"] (ids present in the fake chunk table) and
     calls["first_dense_id"] (the id FTS shares so it fuses to the top).
     """
+    monkeypatch.setattr(retriever.settings, "cohere_api_key", "")
     calls: dict = {"query": None, "rerank_called": False}
 
     async def fake_embed_query(client, query: str) -> list[float]:
         calls["query"] = query
         return [0.1] * 8
 
-    async def fake_dense(session, vector, limit=100):
+    async def fake_dense(session, vector, limit=100, **filters):
+        calls["dense_filters"] = filters
         return list(calls.get("dense_ids", []))
 
-    async def fake_fts(session, query, limit=100):
+    async def fake_fts(session, query, limit=100, **filters):
+        calls["fts_filters"] = filters
         # Dense and FTS agree on the first id — that one must fuse to the top.
         return [calls["first_dense_id"], uuid4()]
 
     async def fake_rerank(query, documents, limit):
         calls["rerank_called"] = True
-        return None  # no COHERE key path
 
     monkeypatch.setattr(retriever.embeddings, "embed_query", fake_embed_query)
     monkeypatch.setattr(retriever.queries, "dense_search", fake_dense)
@@ -117,14 +119,14 @@ def stub_pipeline(monkeypatch: pytest.MonkeyPatch):
 async def test_hybrid_search_returns_metadata_and_rrf_order(stub_pipeline) -> None:
     doc_id = uuid4()
     ids = [uuid4(), uuid4(), uuid4()]
-    chunk_rows = [
-        _chunk_row(id_, doc_id, i, f"text {i}") for i, id_ in enumerate(ids)
-    ]
+    chunk_rows = [_chunk_row(id_, doc_id, i, f"text {i}") for i, id_ in enumerate(ids)]
     session = _FakeSession(chunk_rows, neighbor_rows=[])
     stub_pipeline["dense_ids"] = ids
     stub_pipeline["first_dense_id"] = ids[0]
 
-    results = await retriever.hybrid_search(session, "apple revenue mix", embed_client=object())
+    results = await retriever.hybrid_search(
+        session, "apple revenue mix", embed_model=object()
+    )
 
     assert stub_pipeline["rerank_called"] is False  # no-key path keeps RRF
     assert len(results) == 3
@@ -142,11 +144,16 @@ async def test_hybrid_search_with_neighbors_includes_adjacent_chunks(
 ) -> None:
     doc_id = uuid4()
     ids = [uuid4(), uuid4(), uuid4()]
-    chunk_rows = [
-        _chunk_row(id_, doc_id, i, f"text {i}") for i, id_ in enumerate(ids)
-    ]
+    chunk_rows = [_chunk_row(id_, doc_id, i, f"text {i}") for i, id_ in enumerate(ids)]
     neighbor_rows = [
-        {"id": id_, "document_id": doc_id, "chunk_index": i, "section": "Item 7", "chunk_text": f"text {i}"}
+        {
+            "id": id_,
+            "document_id": doc_id,
+            "chunk_index": i,
+            "section": "Item 7",
+            "page": None,
+            "chunk_text": f"text {i}",
+        }
         for i, id_ in enumerate(ids)
     ]
     session = _FakeSession(chunk_rows, neighbor_rows)
@@ -154,7 +161,11 @@ async def test_hybrid_search_with_neighbors_includes_adjacent_chunks(
     stub_pipeline["first_dense_id"] = ids[0]
 
     results = await retriever.hybrid_search(
-        session, "apple revenue mix", embed_client=object(), with_neighbors=True, top_k=1
+        session,
+        "apple revenue mix",
+        embed_model=object(),
+        with_neighbors=True,
+        top_k=1,
     )
 
     assert len(results) == 1
@@ -165,17 +176,40 @@ async def test_hybrid_search_with_neighbors_includes_adjacent_chunks(
 
 
 async def test_hybrid_search_empty_candidates_returns_empty(stub_pipeline) -> None:
-    async def no_dense(session, vector, limit=100):
+    async def no_dense(session, vector, limit=100, **filters):
         return []
 
-    async def no_fts(session, query, limit=100):
+    async def no_fts(session, query, limit=100, **filters):
         return []
 
-    stub_pipeline  # fixture already patched; override both searches
-    import app.retrieval.retriever as r
+    from unittest.mock import patch
 
-    r.queries.dense_search = no_dense  # type: ignore[method-assign]
-    r.queries.full_text_search = no_fts  # type: ignore[method-assign]
+    with (
+        patch.object(retriever.queries, "dense_search", no_dense),
+        patch.object(retriever.queries, "full_text_search", no_fts),
+    ):
+        results = await retriever.hybrid_search(
+            _FakeSession([], []), "anything", embed_model=object()
+        )
 
-    results = await retriever.hybrid_search(_FakeSession([], []), "anything", embed_client=object())
     assert results == []
+
+
+async def test_filters_reach_both_searches(stub_pipeline) -> None:
+    stub_pipeline["dense_ids"] = []
+    stub_pipeline["first_dense_id"] = uuid4()
+    await retriever.hybrid_search(
+        _FakeSession([], []),
+        "revenue",
+        embed_model=object(),
+        ticker="AAPL",
+        fiscal_year=2025,
+    )
+    assert stub_pipeline["dense_filters"] == {"ticker": "AAPL", "fiscal_year": 2025}
+    assert stub_pipeline["fts_filters"] == stub_pipeline["dense_filters"]
+
+
+async def test_blank_query_is_rejected_before_embedding(stub_pipeline) -> None:
+    with pytest.raises(ValueError, match="query"):
+        await retriever.hybrid_search(_FakeSession([], []), "  ", embed_model=object())
+    assert stub_pipeline["query"] is None

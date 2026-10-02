@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 from urllib.parse import urlparse
 
 from pydantic import field_validator
@@ -24,10 +24,10 @@ class Settings(BaseSettings):
     supabase_anon_key: str
     supabase_service_role_key: str
     database_url: str
-    google_api_key: str
-    # Gemini embedding model; dimensions come from the vector column constant
-    # (app.database.models.constants), not from env — the schema is fixed.
-    google_embedding_model: str = "gemini-embedding-001"
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-3.5-flash-lite"
+    embedding_model: Literal["BAAI/bge-small-en-v1.5"] = "BAAI/bge-small-en-v1.5"
+    embedding_cache_dir: Path = _BACKEND_ROOT / ".cache" / "embeddings"
     # Optional Cohere cross-encoder for Phase 5 retrieval; the reranker is a
     # no-op (hybrid ranking passes through) when unset.
     cohere_api_key: str = ""

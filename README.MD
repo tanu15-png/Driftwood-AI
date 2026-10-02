@@ -19,7 +19,8 @@ Full brief: [docs/client-brief.md](docs/client-brief.md)
 | Retrieval          | Supabase `pgvector` + Postgres full-text search      |
 | Auth               | Supabase Auth (email only)                           |
 | Hosting            | Railway                                              |
-| LLM + embeddings   | OpenAI                                               |
+| LLM                | Gemini through PydanticAI                            |
+| Embeddings         | Local BAAI/bge-small-en-v1.5, CPU FastEmbed            |
 
 ## Repo layout
 
@@ -45,11 +46,11 @@ Install these before setting up `backend/` or `frontend/`:
 | [Node.js](https://nodejs.org/) | 20+ (LTS) | Frontend toolchain | nodejs.org or `nvm install --lts` |
 | [pnpm](https://pnpm.io/installation) | latest | Frontend package manager | `corepack enable && corepack prepare pnpm@latest --activate` |
 
-You also need accounts/keys for external services once the app is wired up. Start with [docs/guides/supabase-setup.md](docs/guides/supabase-setup.md) (account + project), then create an [OpenAI API key](https://platform.openai.com/api-keys) when the LLM layer is wired up.
+Start with [docs/guides/supabase-setup.md](docs/guides/supabase-setup.md), then set `GEMINI_API_KEY` in `backend/.env` using your [Gemini API key](https://aistudio.google.com/apikey). Local embeddings need no API key.
 
 ## Running locally
 
-To be added during the build. Setup guides:
+See [backend/README.md](backend/README.md) for model preparation, migrations, ingestion, and API commands. The [retrieval and grounding pipeline](docs/retrieval-and-grounding.md) documents phase 6 with a Mermaid diagram. Setup guides:
 
 - [Supabase](docs/guides/supabase-setup.md) — account, hosted project (dashboard or CLI)
 - [Backend](docs/guides/backend-setup.md)

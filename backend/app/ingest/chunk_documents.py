@@ -18,17 +18,14 @@ Row shape (JSON per line):
     chunk_text        raw serialized chunk text
     contextualized_text  chunker.contextualize() output — headings prepended —
                       this is what gets embedded
-    token_count       approximate token count of contextualized_text
+    token_count       model token count of contextualized_text
     metadata          {ticker, year, fiscal_year, page, section, offsets,
                        company, filing_type, filing_date, headings, captions,
                        doc_item_refs, num_doc_items, source_url,
                        primary_document}
 
-Token budget: the embedding model's hard token limit is enforced via a
-conservative char-based estimate (Gemini's tokenizer is not public and
-docling's HuggingFace tokenizer would need a model download; char/4
-overestimates, so chunks come out slightly smaller than the target, never
-over the limit). No network calls, no cost — safe to re-run.
+Token counts use the local BGE model tokenizer. The chunk target reserves
+space for special tokens and heading context.
 
 Run with the backend env:
     cd backend && uv run python -m app.ingest.chunk_documents
@@ -38,7 +35,6 @@ from __future__ import annotations
 
 import argparse
 import json
-from typing import Any
 
 from docling_core.transforms.chunker.hierarchical_chunker import HierarchicalChunker
 from docling_core.transforms.chunker.hybrid_chunker import HybridChunker
@@ -46,45 +42,12 @@ from docling_core.transforms.chunker.tokenizer.base import BaseTokenizer
 from docling_core.types.doc.document import DoclingDocument
 
 from app.config import settings
+from app.embeddings import MODEL_TOKEN_LIMIT, create_tokenizer
 from app.ingest.paths import CHUNKS_DIR, COMPANY_NAMES, DOCLING_DIR, DOCLING_MANIFEST
 
-# HybridChunker token target (user decision).
-CHUNK_MAX_TOKENS = 800
-# document_chunks.embedding is vector(1536) — set by the schema constant; the
-# settings model must match the configured Google model.
-EMBEDDING_DIMENSIONS = 1536
-# Gemini embedding input cap in tokens (docs: 2,048). The chunk target stays
-# comfortably below it so heading context never pushes a chunk over.
-EMBEDDING_MODEL_TOKEN_LIMIT = 2048
-# Longest heading chain stored in document_chunks.section (column is 200 chars).
+CHUNK_MAX_TOKENS = 480
+EMBEDDING_MODEL_TOKEN_LIMIT = MODEL_TOKEN_LIMIT
 SECTION_MAX_CHARS = 200
-
-
-class CharEstimateTokenizer(BaseTokenizer):
-    """docling BaseTokenizer with a conservative chars/4 token estimate.
-
-    Gemini's tokenizer is not public and docling's HuggingFace tokenizer
-    would need a model download. Chars/4 overestimates real token counts, so
-    token-aware chunking errs small: chunks never exceed the embedding cap.
-    """
-
-    max_tokens: int
-
-    def count_tokens(self, text: str) -> int:
-        return (len(text) + 3) // 4
-
-    def get_max_tokens(self) -> int:
-        return self.max_tokens
-
-    def get_tokenizer(self) -> Any:
-        # semchunk (used by HybridChunker for splitting) expects a callable
-        # token counter, not the tokenizer object itself.
-        return self.count_tokens
-
-
-def estimate_tokens(text: str) -> int:
-    """Same conservative estimate the chunker splits by (never calls an API)."""
-    return CharEstimateTokenizer(max_tokens=CHUNK_MAX_TOKENS).count_tokens(text)
 
 
 def section_from_headings(headings: list[str] | None) -> str | None:
@@ -98,6 +61,7 @@ def chunk_rows(
     entry: dict,
     chunker_name: str,
     chunker: HierarchicalChunker | HybridChunker,
+    tokenizer: BaseTokenizer,
 ) -> list[dict]:
     rows = []
     for index, chunk in enumerate(chunker.chunk(dl_doc=document)):
@@ -107,7 +71,7 @@ def chunk_rows(
         contextualized = chunker.contextualize(chunk)
         meta = chunk.meta
         headings = list(meta.headings) if meta.headings else None
-        captions = list(meta.captions) if meta.captions else None
+        captions = meta.model_dump(include={"captions"}).get("captions")
         rows.append(
             {
                 "accession_number": entry["accession_number"],
@@ -117,10 +81,14 @@ def chunk_rows(
                 "section": section_from_headings(headings),
                 "chunk_text": chunk.text,
                 "contextualized_text": contextualized,
-                "token_count": estimate_tokens(contextualized),
+                "token_count": tokenizer.count_tokens(contextualized),
                 "metadata": {
                     "ticker": entry["ticker"],
                     "fiscal_year": int(entry["report_date"][:4]),
+                    "page": None,
+                    "section": section_from_headings(headings),
+                    # HTML conversion has source anchors but no character spans.
+                    "offsets": None,
                     "company": COMPANY_NAMES[entry["ticker"]],
                     "filing_type": entry["form"],
                     "filing_date": entry["filing_date"],
@@ -142,7 +110,7 @@ def main() -> None:
         "--max-tokens",
         type=int,
         default=CHUNK_MAX_TOKENS,
-        help="HybridChunker token target (default: 800)",
+        help="HybridChunker token target (default: 480)",
     )
     parser.add_argument(
         "--filter-accession",
@@ -151,10 +119,10 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if args.max_tokens >= EMBEDDING_MODEL_TOKEN_LIMIT:
+    if not 1 <= args.max_tokens <= EMBEDDING_MODEL_TOKEN_LIMIT - 2:
         raise SystemExit(
             f"max_tokens {args.max_tokens} must stay below the "
-            f"{settings.google_embedding_model} hard limit "
+            f"{settings.embedding_model} hard limit "
             f"of {EMBEDDING_MODEL_TOKEN_LIMIT}."
         )
 
@@ -170,25 +138,34 @@ def main() -> None:
     if args.filter_accession:
         entries = [e for e in entries if e["accession_number"] == args.filter_accession]
         if not entries:
-            raise SystemExit(f"No filing with accession {args.filter_accession} in the manifest.")
+            raise SystemExit(
+                f"No filing with accession {args.filter_accession} in the manifest."
+            )
 
     print(
         f"Chunking {len(entries)} filing(s) with HybridChunker (max_tokens={args.max_tokens}) "
-        f"and HierarchicalChunker, chars/4 token estimates "
-        f"(embedding model: {settings.google_embedding_model})."
+        f"and HierarchicalChunker, model token counts "
+        f"(embedding model: {settings.embedding_model})."
     )
 
     CHUNKS_DIR.mkdir(parents=True, exist_ok=True)
-    tokenizer = CharEstimateTokenizer(max_tokens=args.max_tokens)
+    tokenizer = create_tokenizer(max_tokens=args.max_tokens)
     chunkers = {
         "hybrid": HybridChunker(tokenizer=tokenizer),
         "hierarchical": HierarchicalChunker(),
     }
     total = {"hybrid": 0, "hierarchical": 0}
     oversize = 0
-    with open(CHUNKS_DIR / "chunks_hybrid.jsonl", "w", encoding="utf-8") as hybrid_handle, open(
-        CHUNKS_DIR / "chunks_hierarchical.jsonl", "w", encoding="utf-8"
-    ) as hierarchical_handle:
+    unembeddable = 0
+    # A failed or interrupted run must not replace a complete chunk corpus.
+    hybrid_path = CHUNKS_DIR / "chunks_hybrid.jsonl"
+    hierarchical_path = CHUNKS_DIR / "chunks_hierarchical.jsonl"
+    hybrid_temporary = hybrid_path.with_suffix(".jsonl.tmp")
+    hierarchical_temporary = hierarchical_path.with_suffix(".jsonl.tmp")
+    with (
+        open(hybrid_temporary, "w", encoding="utf-8") as hybrid_handle,
+        open(hierarchical_temporary, "w", encoding="utf-8") as hierarchical_handle,
+    ):
         handles = {"hybrid": hybrid_handle, "hierarchical": hierarchical_handle}
         for entry in entries:
             docling_path = DOCLING_DIR / entry["docling_path"]
@@ -199,13 +176,19 @@ def main() -> None:
             document = DoclingDocument.load_from_json(docling_path)
             per_filing = {}
             for name, chunker in chunkers.items():
-                rows = chunk_rows(document, entry, name, chunker)
+                rows = chunk_rows(document, entry, name, chunker, tokenizer)
                 for row in rows:
                     handles[name].write(json.dumps(row, ensure_ascii=False) + "\n")
                 per_filing[name] = len(rows)
                 total[name] += len(rows)
                 if name == "hybrid":
-                    oversize += sum(1 for row in rows if row["token_count"] > args.max_tokens)
+                    oversize += sum(
+                        1 for row in rows if row["token_count"] > args.max_tokens
+                    )
+                    unembeddable += sum(
+                        1 for row in rows
+                        if row["token_count"] > EMBEDDING_MODEL_TOKEN_LIMIT - 2
+                    )
             print(
                 f"{entry['accession_number']}: {per_filing['hybrid']} hybrid + "
                 f"{per_filing['hierarchical']} hierarchical chunks"
@@ -213,10 +196,15 @@ def main() -> None:
 
     print(
         f"Wrote {total['hybrid']} hybrid + {total['hierarchical']} hierarchical chunks "
-        f"to {CHUNKS_DIR} ({oversize} hybrid chunks over the token budget)."
+        f"to {CHUNKS_DIR} ({oversize} above the target, "
+        f"{unembeddable} exceed the model limit)."
     )
-    if oversize:
+    # Table serialization can add tokens beyond the chunker's target; the
+    # model's actual content limit remains the publication gate.
+    if unembeddable:
         raise SystemExit(1)
+    hybrid_temporary.replace(hybrid_path)
+    hierarchical_temporary.replace(hierarchical_path)
 
 
 if __name__ == "__main__":

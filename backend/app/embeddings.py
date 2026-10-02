@@ -1,117 +1,92 @@
-"""Gemini embedding client shared by ingest and retrieval.
-
-Both corpus chunks and user queries must embed with the same model and
-dimensions, so there is exactly one place that talks to the embeddings API.
-Query and document embeddings use Gemini's task types for better retrieval
-quality (RETRIEVAL_QUERY vs RETRIEVAL_DOCUMENT).
-
-The google-genai SDK reads GOOGLE_API_KEY / GEMINI_API_KEY from the
-environment on its own; settings mirrors it here instead of sprinkling
-os.environ access around.
-"""
-
-from __future__ import annotations
+"""Local CPU embeddings shared by corpus intake and retrieval."""
 
 import asyncio
-import time
-from typing import Literal
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
 
-from google import genai
+from docling_core.transforms.chunker.tokenizer.base import BaseTokenizer
+from fastembed import TextEmbedding
+from huggingface_hub import hf_hub_download
+from tokenizers import Tokenizer
 
 from app.config import settings
 from app.database.models.constants import EMBEDDING_DIMENSIONS
 
-EMBED_BATCH_SIZE = 100
-MAX_RETRIES = 5
-REQUEST_TIMEOUT_SECONDS = 120.0
-
-TaskType = Literal["RETRIEVAL_QUERY", "RETRIEVAL_DOCUMENT"]
+MODEL_TOKEN_LIMIT = 512
+QUERY_INSTRUCTION = "Represent this sentence for searching relevant passages: "
 
 
-def _client() -> genai.Client:
-    return genai.Client(
-        api_key=settings.google_api_key,
-        http_options=genai.types.HttpOptions(timeout=REQUEST_TIMEOUT_SECONDS * 1000),
+class BgeTokenizer(BaseTokenizer):
+    tokenizer: Any
+    max_tokens: int
+
+    def count_tokens(self, text: str) -> int:
+        return len(self.tokenizer.encode(text, add_special_tokens=False).ids)
+
+    def get_max_tokens(self) -> int:
+        return self.max_tokens
+
+    def get_tokenizer(self) -> Callable[[str], int]:
+        return self.count_tokens
+
+
+def create_tokenizer(max_tokens: int = 480, *, download: bool = False) -> BgeTokenizer:
+    path = hf_hub_download(
+        repo_id=settings.embedding_model,
+        filename="tokenizer.json",
+        cache_dir=str(settings.embedding_cache_dir / "tokenizer"),
+        local_files_only=not download,
     )
+    tokenizer = Tokenizer.from_file(path)
+    # Count the whole passage so overlong inputs cannot appear to fit.
+    tokenizer.no_truncation()
+    tokenizer.no_padding()
+    return BgeTokenizer(tokenizer=tokenizer, max_tokens=max_tokens)
 
 
-def embed_texts(
-    client: genai.Client,
-    texts: list[str],
-    task_type: TaskType = "RETRIEVAL_DOCUMENT",
-) -> tuple[list[list[float]], int]:
-    """Embed texts in batches, retrying transient failures with backoff.
-
-    Returns (vectors in input order, total billed tokens).
-    """
-    vectors: list[list[float]] = []
-    billed_tokens = 0
-    for start in range(0, len(texts), EMBED_BATCH_SIZE):
-        batch = texts[start : start + EMBED_BATCH_SIZE]
-        response = None
-        for attempt in range(MAX_RETRIES):
-            try:
-                response = client.models.embed_content(
-                    model=settings.google_embedding_model,
-                    contents=batch,
-                    config=genai.types.EmbedContentConfig(
-                        task_type=task_type,
-                        output_dimensionality=EMBEDDING_DIMENSIONS,
-                    ),
-                )
-                break
-            except Exception as error:  # script boundary: retry transient failures, re-raise the rest
-                if attempt == MAX_RETRIES - 1:
-                    raise
-                wait = 2**attempt * 2
-                print(f"  embed batch failed ({error}); retry {attempt + 1} in {wait}s")
-                time.sleep(wait)
-        assert response is not None and response.embeddings is not None
-        embeddings = response.embeddings
-        if len(embeddings) != len(batch):
-            raise RuntimeError(
-                f"Embedding API returned {len(embeddings)} vectors for {len(batch)} inputs"
-            )
-        vectors.extend(item.values or [] for item in embeddings)
-        stats = getattr(response, "embed_content_statistics", None)
-        if stats is not None and stats.token_count is not None:
-            billed_tokens += int(stats.token_count)
-    return vectors, billed_tokens
+@dataclass
+class LocalEmbeddingModel:
+    encoder: TextEmbedding
+    tokenizer: BaseTokenizer
 
 
-async def embed_query(client: genai.Client, query: str) -> list[float]:
-    """Embed a single user query with the RETRIEVAL_QUERY task type.
-
-    Async because it runs in the request path; the SDK's native async client
-    is used rather than a thread offload.
-    """
-    response = await client.aio.models.embed_content(
-        model=settings.google_embedding_model,
-        contents=[query],
-        config=genai.types.EmbedContentConfig(
-            task_type="RETRIEVAL_QUERY",
-            output_dimensionality=EMBEDDING_DIMENSIONS,
+def create_model(*, download: bool = False) -> LocalEmbeddingModel:
+    return LocalEmbeddingModel(
+        encoder=TextEmbedding(
+            model_name=settings.embedding_model,
+            cache_dir=str(settings.embedding_cache_dir),
+            threads=2,
+            providers=["CPUExecutionProvider"],
+            local_files_only=not download,
         ),
+        tokenizer=create_tokenizer(download=download),
     )
-    if response.embeddings is None or not response.embeddings:
-        raise RuntimeError("Embedding API returned no vectors for the query")
-    values = response.embeddings[0].values
-    if not values:
-        raise RuntimeError("Embedding API returned an empty vector for the query")
-    return list(values)
 
 
-def embed_query_sync(client: genai.Client, query: str) -> list[float]:
-    """Sync twin of embed_query for scripts and integration tests."""
-    vectors, _ = embed_texts(client, [query], task_type="RETRIEVAL_QUERY")
-    return vectors[0]
+def embed_texts(model: LocalEmbeddingModel, texts: list[str]) -> list[list[float]]:
+    # Reserve CLS/SEP tokens; never allow the runtime to silently truncate.
+    for text in texts:
+        if model.tokenizer.count_tokens(text) > MODEL_TOKEN_LIMIT - 2:
+            raise ValueError("Embedding input exceeds 510 tokens; re-chunk the filing.")
+    vectors = [vector.tolist() for vector in model.encoder.embed(texts, batch_size=32)]
+    if len(vectors) != len(texts) or any(
+        len(vector) != EMBEDDING_DIMENSIONS for vector in vectors
+    ):
+        raise RuntimeError("Local embedding output does not match the database dimensions.")
+    return vectors
 
 
-def verify_dimensions(client: genai.Client) -> None:
-    """Fail fast if the configured model no longer matches vector(1536)."""
-    vectors, _ = embed_texts(client, ["dimension probe"])
-    if len(vectors[0]) != EMBEDDING_DIMENSIONS:
-        raise RuntimeError(
-            f"{settings.google_embedding_model} returned {len(vectors[0])} dimensions; "
-            f"document_chunks.embedding is vector({EMBEDDING_DIMENSIONS})."
-        )
+def embed_query_sync(model: LocalEmbeddingModel, query: str) -> list[float]:
+    return embed_texts(model, [QUERY_INSTRUCTION + query])[0]
+
+
+async def embed_query(model: LocalEmbeddingModel, query: str) -> list[float]:
+    # Tokenization and CPU inference must not block the request event loop.
+    return await asyncio.to_thread(embed_query_sync, model, query)
+
+
+if __name__ == "__main__":
+    model = create_model(download=True)
+    vectors = embed_texts(model, ["Apple revenue", "NVIDIA data center GPUs"])
+    print(f"Local CPU model ready: {settings.embedding_model}, {len(vectors[0])} dimensions")

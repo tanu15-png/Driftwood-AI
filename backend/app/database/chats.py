@@ -4,6 +4,7 @@ Every function takes the caller's user id; unknown threads raise 404 and
 other users' threads raise 403, so routes cannot forget the check.
 """
 
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -11,7 +12,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.models import ChatMessage, ChatThread
+from app.database.models import ChatMessage, ChatThread, MessageCitation
 
 # created_at has microsecond precision. Both rows of a turn commit in one
 # transaction, so Postgres now() would give them the same timestamp; the
@@ -63,15 +64,18 @@ async def persist_turn(
     thread: ChatThread,
     user_message: ChatMessage,
     assistant_message: ChatMessage,
+    citations: Sequence[MessageCitation] = (),
 ) -> None:
     """Insert both messages and bump the thread in one transaction.
 
-    Called only after the assistant stream completed, so a failed or
-    interrupted turn persists nothing.
+    Called after validated text/source parts and before the successful finish
+    event. A disconnect before this point persists nothing.
     """
     now = datetime.now(UTC)
     user_message.created_at = now
     assistant_message.created_at = now + _TURN_OFFSET
     thread.updated_at = now
     session.add_all([user_message, assistant_message])
+    await session.flush()
+    session.add_all(citations)
     await session.commit()

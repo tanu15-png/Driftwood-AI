@@ -16,8 +16,8 @@ _MIGRATION_FILE = (
 )
 
 
-def test_embedding_dimensions_constant_matches_1536() -> None:
-    assert EMBEDDING_DIMENSIONS == 1536
+def test_embedding_dimensions_constant_matches_384() -> None:
+    assert EMBEDDING_DIMENSIONS == 384
 
 
 def test_document_chunk_declares_retrieval_indexes() -> None:
