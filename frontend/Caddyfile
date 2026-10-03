@@ -1,0 +1,26 @@
+{
+	admin off
+	auto_https off
+}
+
+:{$PORT:8080} {
+	encode zstd gzip
+
+	handle /health {
+		respond "ok" 200
+	}
+
+	handle /assets/* {
+		root * /srv
+		file_server
+	}
+
+	handle {
+		root * /srv
+		route {
+			try_files {path} /index.html
+			header /index.html Cache-Control "public, max-age=0, must-revalidate"
+			file_server
+		}
+	}
+}

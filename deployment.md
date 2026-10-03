@@ -1,8 +1,13 @@
 # Railway deployment checklist
 
-**Docker is optional.** Use Railway's Railpack builder for both services. A custom
-Dockerfile is useful later for exact runtime control or bundling the embedding
-model into the image. [Railway builds](https://docs.railway.com/builds/build-configuration).
+**This project now uses Docker for deployment.** Railway detects each service's
+Dockerfile automatically. Railway itself does not require Docker, but these
+instructions use the Docker setup we chose. [Railway Docker builds](https://docs.railway.com/builds/dockerfiles).
+
+- [Backend Dockerfile](backend/Dockerfile): Python 3.12, locked dependencies, model preparation, FastAPI.
+- [Frontend Dockerfile](frontend/Dockerfile): Node builds React; Caddy serves the resulting static files.
+- [Caddyfile](frontend/Caddyfile): port, health endpoint, and React route fallback.
+- Both services have a `.dockerignore` to exclude local secrets and generated files.
 
 This is a setup guide; deployment has not been performed.
 
@@ -12,7 +17,7 @@ This is a setup guide; deployment has not been performed.
 flowchart LR
     User[Browser] --> Frontend
     subgraph Railway
-        Frontend[Frontend: React SPA]
+        Frontend[Frontend: Caddy + React SPA]
         Backend[Backend: FastAPI + CPU embeddings]
         Cache[Volume: /models]
         Backend --> Cache
@@ -41,10 +46,12 @@ Create one project with two services connected to the same GitHub repo.
 | --- | --- | --- |
 | Name | `backend` | `frontend` |
 | Root directory | `/backend` | `/frontend` |
-| Builder | Railpack | Railpack |
+| Dockerfile | `backend/Dockerfile` | `frontend/Dockerfile` |
 | Watch paths | `/backend/**` | `/frontend/**` |
 
 Commands run inside each root directory. [Monorepo setup](https://docs.railway.com/deployments/monorepo).
+Confirm build logs show **Using detected Dockerfile**. Clear previous custom
+build/start commands so Railway uses the Dockerfiles.
 
 ## 3. Backend: variables and commands
 
@@ -61,33 +68,22 @@ Add these under **backend → Variables**:
 | `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` |
 | `EMBEDDING_CACHE_DIR` | `/models/embeddings` |
 | `ALLOWED_ORIGINS` | `http://localhost:5173` initially; replace in step 5 |
-| `RAILPACK_PYTHON_VERSION` | `3.12` |
 | `RAILWAY_HEALTHCHECK_TIMEOUT_SEC` | `600` initially; adjust after measuring startup |
 | `COHERE_API_KEY` | Optional reranker key; otherwise omit |
 
 1. Attach a **volume mounted at `/models`**.
 2. Start with **one replica and one Uvicorn worker**. No GPU is needed.
-3. Set **Build command**:
-
-   ```sh
-   uv sync --frozen --no-dev
-   ```
-
+3. Leave **Build command** and **Start command empty**. The Dockerfile installs
+   dependencies and its `CMD` starts the application.
 4. Set **Pre-deploy command** (only this service should own migrations):
 
    ```sh
-   uv run --no-sync alembic upgrade head
+   alembic upgrade head
    ```
 
-5. Set **Start command**, copying the whole line:
-
-   ```sh
-   sh -c 'uv run --no-sync python -m app.embeddings && exec uv run --no-sync uvicorn app.main:app --host 0.0.0.0 --port "$PORT"'
-   ```
-
-6. Set **Healthcheck Path** to `/health`.
-7. Deploy → Networking → **Generate Domain**. Save the backend's HTTPS URL.
-8. Check `https://<backend-domain>/health`; expect `{"status":"ok"}`.
+5. Set **Healthcheck Path** to `/health`.
+6. Deploy → Networking → **Generate Domain**. Save the backend's HTTPS URL.
+7. Check `https://<backend-domain>/health`; expect `{"status":"ok"}`.
 
 **Why the startup command matters:**
 
@@ -109,12 +105,12 @@ Add these under **frontend → Variables**, before building:
 | `VITE_API_BASE_URL` | `https://<backend-domain>` |
 | `VITE_SUPABASE_URL` | Same Supabase project's URL |
 | `VITE_SUPABASE_ANON_KEY` | Same project's public anon key |
-| `RAILPACK_NODE_VERSION` | `24` |
-| `RAILPACK_SPA_OUTPUT_DIR` | `dist` |
 
-1. Set **Build command** to `pnpm build`. Railpack installs dependencies from the lockfile.
-2. Keep build-time dev dependencies available: Vite and TypeScript need them.
-3. Leave **Start command empty**. Railpack serves the Vite SPA with Caddy and route fallback.
+1. Leave **Build command** and **Start command empty**. The Dockerfile builds
+   with `pnpm build` and starts Caddy.
+2. Set **Healthcheck Path** to `/health`.
+3. The three `VITE_*` variables above are declared as Docker build arguments;
+   Railway supplies their values during the build.
 4. Deploy → Networking → **Generate Domain**. Save the frontend's HTTPS URL.
 
 - Use the backend's **public HTTPS URL**, not `railway.internal`.
@@ -122,7 +118,8 @@ Add these under **frontend → Variables**, before building:
 - Never put Gemini, database, or service-role secrets in the frontend.
 - Changing `VITE_*` values requires a **frontend rebuild**.
 
-[Railpack Vite deployment](https://railpack.com/languages/node/), [Vite variables](https://vite.dev/guide/env-and-mode).
+[Docker build variables](https://docs.railway.com/builds/dockerfiles#using-variables-at-build-time),
+[Vite variables](https://vite.dev/guide/env-and-mode).
 
 ## 5. Connect and verify
 
@@ -142,10 +139,10 @@ Add these under **frontend → Variables**, before building:
 | Problem | Check |
 | --- | --- |
 | Backend will not start | Required variables, migration logs, model startup logs |
-| Model cache missing | `/models` volume, cache variable, complete start command |
+| Model cache missing | `/models` volume, cache variable, Docker startup logs |
 | Healthcheck timeout | `PORT`, host binding, first download time, memory |
 | UI cannot reach API | Public API URL, frontend rebuild, exact CORS origin |
-| Conversation refresh returns 404 | SPA mode; leave frontend start command empty |
+| Conversation refresh returns 404 | Caddyfile route fallback; leave frontend start command empty |
 | Supabase/auth failure | Same project on both services; keys and DB connection |
 | Gemini quota/model error | Key quota and model availability; Docker will not fix this |
 | No filing evidence | Corpus exists in the target Supabase database; retrieval results |
@@ -153,3 +150,27 @@ Add these under **frontend → Variables**, before building:
 **Later releases:** push to the connected branch, review migrations, and rebuild
 for changed frontend variables. Do not ingest the corpus on every startup.
 Application rollback does not undo database migrations.
+
+## Optional: run the same images locally
+
+From the repository root, with Docker running:
+
+```sh
+docker build -t copilot-backend ./backend
+docker run --rm -p 8000:8000 --env-file backend/.env \
+  -e EMBEDDING_CACHE_DIR=/models/embeddings -v copilot-models:/models copilot-backend
+```
+
+Build the frontend with public configuration (replace placeholders):
+
+```sh
+docker build -t copilot-frontend \
+  --build-arg VITE_API_BASE_URL=http://localhost:8000 \
+  --build-arg VITE_SUPABASE_URL='https://<project-ref>.supabase.co' \
+  --build-arg VITE_SUPABASE_ANON_KEY='<public-anon-key>' ./frontend
+docker run --rm -p 5173:8080 copilot-frontend
+```
+
+Open `http://localhost:5173`; backend CORS must allow that origin.
+Docker image build/run verification is pending: this environment's Docker daemon
+denies access. No Railway deployment has been performed.
