@@ -59,6 +59,13 @@ async def list_messages(session: AsyncSession, thread_id: UUID) -> list[ChatMess
     return list(result.scalars().all())
 
 
+async def delete_thread(session: AsyncSession, user_id: UUID, thread_id: UUID) -> None:
+    thread = await get_owned_thread(session, user_id, thread_id)
+    # Foreign-key cascades remove messages and their citations in this transaction.
+    await session.delete(thread)
+    await session.commit()
+
+
 async def persist_turn(
     session: AsyncSession,
     thread: ChatThread,
@@ -75,6 +82,8 @@ async def persist_turn(
     user_message.created_at = now
     assistant_message.created_at = now + _TURN_OFFSET
     thread.updated_at = now
+    if not thread.title:
+        thread.title = " ".join(user_message.content.split())[:80]
     session.add_all([user_message, assistant_message])
     await session.flush()
     session.add_all(citations)

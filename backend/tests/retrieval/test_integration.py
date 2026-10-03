@@ -56,9 +56,12 @@ async def test_apple_revenue_passages_are_citable() -> None:
             ).all()
             assert missing == []
             keyword_ids = await full_text_search(
-                session, "iPhone Services", ticker="AAPL"
+                session, "Please show me iPhone versus Services revenue", ticker="AAPL"
             )
             assert keyword_ids
+            assert keyword_ids == await full_text_search(
+                session, "iPhone Services revenue", ticker="AAPL"
+            )
             passages = await hybrid_search(
                 session,
                 "Apple iPhone vs Services revenue mix",

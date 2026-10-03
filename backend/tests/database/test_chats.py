@@ -16,6 +16,7 @@ class FakeSession:
         self._thread = thread
         self.added: list = []
         self.commit_count = 0
+        self.deleted = []
 
     async def get(self, model, key):
         assert model is ChatThread
@@ -48,6 +49,9 @@ class FakeSession:
 
     async def refresh(self, obj) -> None:
         pass
+
+    async def delete(self, obj) -> None:
+        self.deleted.append(obj)
 
 
 def _thread(user_id=None) -> ChatThread:
@@ -104,3 +108,39 @@ async def test_persist_turn_one_commit_and_offsets_timestamps() -> None:
     assert session.added == [user_message, assistant_message]
     assert assistant_message.created_at > user_message.created_at
     assert thread.updated_at is not None
+    assert thread.title == "t"
+
+
+async def test_first_successful_turn_names_untitled_thread() -> None:
+    session = FakeSession()
+    thread = _thread()
+    thread.title = None
+    question = "  Apple\n\tServices revenue " + "growth " * 20
+    user_message = ChatMessage(
+        thread_id=thread.id, role=MessageRole.USER, content=question
+    )
+    assistant_message = ChatMessage(
+        thread_id=thread.id, role=MessageRole.ASSISTANT, content="a"
+    )
+    await chats.persist_turn(session, thread, user_message, assistant_message)
+    assert thread.title == " ".join(question.split())[:80]
+    assert session.commit_count == 1
+
+
+async def test_delete_owned_thread_commits() -> None:
+    thread = _thread()
+    session = FakeSession(thread)
+    await chats.delete_thread(session, thread.user_id, thread.id)
+    assert session.deleted == [thread]
+    assert session.commit_count == 1
+
+
+@pytest.mark.parametrize("missing", [False, True])
+async def test_delete_rejects_foreign_or_missing_thread(missing) -> None:
+    thread = _thread()
+    session = FakeSession(None if missing else thread)
+    with pytest.raises(HTTPException) as exc:
+        await chats.delete_thread(session, uuid4(), thread.id)
+    assert exc.value.status_code == (404 if missing else 403)
+    assert session.deleted == []
+    assert session.commit_count == 0

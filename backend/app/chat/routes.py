@@ -9,7 +9,7 @@ from typing import Annotated, Any
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.assistant.runtime import AssistantRuntime, get_runtime
@@ -70,6 +70,16 @@ async def list_messages(
         messages_lib.ui_message_from_chat_message(m)
         for m in await chats.list_messages(session, thread_id)
     ]
+
+
+@router.delete("/threads/{thread_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_thread(
+    thread_id: UUID,
+    user: Annotated[CurrentUser, Depends(get_current_user)],
+    session: GetSession,
+) -> Response:
+    await chats.delete_thread(session, user.id, thread_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 class ChatStreamRequest(BaseModel):

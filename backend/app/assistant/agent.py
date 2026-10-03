@@ -10,11 +10,25 @@ from pydantic_ai import Agent, ModelRetry, RunContext
 from pydantic_ai.models import Model
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
+from pydantic_ai.tools import ToolDefinition
 
 from app.assistant.deps import DocumentAgentDeps
 from app.assistant.outputs import GroundedAnswer, SourcePassage
 from app.config import settings
 from app.embeddings import MODEL_TOKEN_LIMIT, QUERY_INSTRUCTION
+from app.grounding.validator import GroundingError
+
+MAX_MODEL_REQUESTS = 6
+MAX_TOOL_CALLS = 5
+
+
+async def prepare_retrieval_tool(
+    ctx: RunContext[DocumentAgentDeps], tool: ToolDefinition,
+) -> ToolDefinition | None:
+    # Reserve two requests for a final answer and its possible correction.
+    if ctx.usage.requests >= MAX_MODEL_REQUESTS - 2 or ctx.usage.tool_calls >= MAX_TOOL_CALLS:
+        return None
+    return tool
 
 
 def create_gemini_model() -> GoogleModel:
@@ -32,7 +46,7 @@ def create_agent(model: Model) -> Agent[DocumentAgentDeps, GroundedAnswer]:
         retries=1, model_settings={"max_tokens": 4000},
     )
 
-    @agent.tool(sequential=True)
+    @agent.tool(sequential=True, prepare=prepare_retrieval_tool)
     async def search_filings(
         ctx: RunContext[DocumentAgentDeps],
         query: Annotated[str, Field(min_length=1, max_length=1200)],
@@ -47,14 +61,14 @@ def create_agent(model: Model) -> Agent[DocumentAgentDeps, GroundedAnswer]:
             raise ModelRetry("Shorten the search query to fit the embedding token limit.")
         return await ctx.deps.retriever.search(query, ticker, fiscal_year)
 
-    @agent.tool(sequential=True)
+    @agent.tool(sequential=True, prepare=prepare_retrieval_tool)
     async def read_chunk(
         ctx: RunContext[DocumentAgentDeps], chunk_id: UUID
     ) -> SourcePassage | None:
         """Read a passage already retrieved in this turn."""
         return ctx.deps.retriever.passages.get(chunk_id)
 
-    @agent.tool(sequential=True)
+    @agent.tool(sequential=True, prepare=prepare_retrieval_tool)
     async def read_surrounding_chunks(
         ctx: RunContext[DocumentAgentDeps], chunk_id: UUID,
         window: Annotated[int, Field(ge=0, le=3)] = 1,
@@ -66,7 +80,10 @@ def create_agent(model: Model) -> Agent[DocumentAgentDeps, GroundedAnswer]:
     def validate_output(
         ctx: RunContext[DocumentAgentDeps], output: GroundedAnswer
     ) -> GroundedAnswer:
-        ctx.deps.validator.validate(output, ctx.deps.retriever.passages)
+        try:
+            ctx.deps.validator.validate(output, ctx.deps.retriever.passages)
+        except GroundingError as exc:
+            raise ModelRetry(str(exc)) from exc
         return output
 
     return agent

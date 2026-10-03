@@ -36,10 +36,6 @@ export async function authHeaders(): Promise<Record<string, string>> {
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
-async function bearerHeaders(): Promise<Record<string, string>> {
-  return authHeaders()
-}
-
 async function parseErrorDetail(response: Response): Promise<string> {
   try {
     const body = (await response.json()) as { detail?: unknown }
@@ -50,27 +46,34 @@ async function parseErrorDetail(response: Response): Promise<string> {
   return `Request failed with status ${response.status}`
 }
 
-export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const url = `${env.apiBaseUrl.replace(/\/$/, '')}${path}`
-
+/** Shared by JSON requests and the AI SDK stream; preserves the caller's abort signal. */
+export async function authenticatedFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers)
+  for (const [name, value] of Object.entries(await authHeaders())) headers.set(name, value)
   let response: Response
   try {
-    response = await fetch(url, {
+    response = await fetch(input, {
       ...init,
-      headers: {
-        ...(init.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-        ...(await bearerHeaders()),
-        ...init.headers,
-      },
-      signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+      headers,
     })
   } catch (cause) {
+    if (init.signal?.aborted && init.signal.reason?.name !== 'TimeoutError') throw cause
     throw new NetworkError(cause)
   }
 
   if (!response.ok) {
     throw new ApiError(response.status, await parseErrorDetail(response))
   }
+  return response
+}
+
+export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const url = `${env.apiBaseUrl.replace(/\/$/, '')}${path}`
+  const headers = new Headers(init.headers)
+  if (init.body !== undefined) headers.set('Content-Type', 'application/json')
+  const response = await authenticatedFetch(url, {
+    ...init, headers, signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+  })
   if (response.status === 204) return undefined as T
   return (await response.json()) as T
 }

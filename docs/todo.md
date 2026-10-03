@@ -22,6 +22,14 @@ Mark items `[x]` as you finish them. Keep the current phase until its "done when
 - Browser interaction has not been manually verified during this audit; frontend verification covers TypeScript compilation, production build, and lint.
 - Backend validation: 111 unit tests passed; three corpus integration tests and the live Gemini/auth/chat integration test passed. Ruff and `git diff --check` pass. The live tests cover generation/refusal, real auth and grounded chat persistence, local vector normalization, chunk re-ingestion, and full-corpus retrieval.
 
+## Verification — 2026-10-03
+
+- Phase 7's five implementation tasks are complete: citation/filing metadata, in-app quote and passage inspection, distinct refusal states, status-specific errors, and thread titles/timestamps. Stream authentication and new-thread draft/history ordering are fixed.
+- Backend: 124 unit tests passed (4 integration tests deselected), including automatic title generation and preserving an existing title. Ruff passes. Keyword retrieval was separately live-verified against Supabase after the previous change.
+- Frontend: strict TypeScript check (`pnpm exec tsc --noEmit --strict -p tsconfig.app.json`), production build, and lint pass. Manual browser acceptance remains pending because no browser tool or installed browser is available in this environment; see the Phase 7 smoke checklist. No frontend test runner or runtime dependency was added.
+- Follow-up 502 repair: reproduced `UsageLimitExceeded` on the live Apple sales question. Retrieval tools now stop with two requests reserved for output/correction; grounding failures use one bounded correction attempt with validation unchanged. Provider quota/model/credential errors have safe, specific messages. The error banner uses the latest AI SDK error state instead of a separate stale copy. Verification: 133 unit tests, live Gemini/auth/chat answer-and-refusal integration, Ruff, frontend production build, and lint pass. User browser feedback also confirms an Alphabet citation and in-app filing excerpt render; the remaining refresh/refusal browser checks are still pending.
+- Light-layout/source-sidebar/delete update: 140 backend unit tests pass. The live chat integration test passes for sourced answers, refusals, ownership-protected deletion, missing/deleted-thread responses, and cascading removal of messages/citations; temporary accounts are cleaned up. Strict frontend TypeScript and production build pass. The new layout's visual browser review remains pending.
+
 ---
 
 
@@ -184,11 +192,23 @@ Goal: answers come only from retrieved passages; citations are validated in code
 
 Goal: the analyst can verify every claim in one click.
 
-- [ ] Render citations: company, filing, date, page/section
-- [ ] Click a citation → show underlying passage excerpt
-- [ ] Insufficient-evidence state is visually distinct from a sourced answer
-- [ ] Distinguish 401 / 403 / 404 / 422 / 502 / 500 and network/CORS in the UI
-- [ ] Thread titles / timestamps good enough for "see my past conversations"
+- [x] Render citations: company, filing, date, page/section — typed citation/source parts work for streamed answers and saved history. The evidence panel shows company/ticker, form, fiscal year, filing date, and page/section; missing HTML locations are explicitly unavailable.
+- [x] Click a citation → show underlying passage excerpt — numbered inline markers and citation buttons open a right-hand source sidebar (drawer on smaller screens); inspect the exact quote, full passage with the quote highlighted, or original SEC filing without inserting evidence between answers.
+- [x] Insufficient-evidence state is visually distinct from a sourced answer — amber refusal cards with explicit insufficient-evidence / investment-advice labels, versus cited-evidence answers. Older messages without grounding parts do not receive a sourced-answer label.
+- [x] Distinguish 401 / 403 / 404 / 422 / 502 / 500 and network/CORS in the UI — shared error mapping for history/sidebar requests and the authenticated AI SDK transport; also covers retrieval outages (503). Retry and Dismiss clear the stream error banner.
+- [x] Thread titles / timestamps good enough for "see my past conversations" — the first successful turn names an untitled conversation from its question (whitespace normalized, 80 characters); existing titles are preserved. Sidebar shows local last-updated timestamps and refreshes after successful turns.
+- [x] User-requested ChatGPT-style light layout — full-width white workspace, gray collapsible conversation sidebar, centered answers, rounded multiline composer, and responsive navigation/source drawers.
+- [x] Delete conversations — sidebar delete control and confirmation dialog; authenticated backend ownership checks and cascading message/citation removal. Deleting the active conversation stops its stream and returns to the new-chat screen.
+- [x] Highlighted original SEC links — citation quotes generate encoded text-fragment links to the actual filing in a new tab, with a plain-link fallback and a best-effort notice. Works for streamed answers and saved history; browser matching is not guaranteed.
+- Verification: strict TypeScript, production build, and lint pass. Checked link encoding and the downloaded Apple FY2024 Services sentence; link normalization accounts for the conversion-added space before `®`. Browser scroll/highlight behavior remains unverified.
+- [ ] Manual highlighted-link check: open an Apple FY2024 Services citation in a browser supporting text fragments, confirm the original filing highlights the matching sentence, and verify “Open without highlighting”. Also check that unmatched table text still opens the filing normally.
+
+Implementation also fixes missing bearer authentication on `/chat/stream`, waits
+for history before sending a new-thread draft, and clears the navigation draft
+after sending so refreshing cannot resend it.
+
+- [ ] Manual browser smoke check: sign in, ask “What was Apple's iPhone versus Services revenue mix in fiscal 2024?”, click a numbered citation, inspect the quote/full passage, refresh and reopen the citation, and confirm the conversation title/timestamp. Ask “What is the weather on Mars today?” and confirm the distinct insufficient-evidence state. Implementation is ready; this environment has no browser tool or installed browser, so this check has not been performed.
+- [ ] Visual review of the new light layout on desktop/mobile: open and close the source sidebar, switch conversations, and cancel/confirm deletion of a disposable chat.
 
 **Done when:** you can answer one sample brief question end-to-end in the browser and open the cited passage without leaving the app.
 
@@ -269,4 +289,4 @@ Also:
 | 5    | Phase 9 + pilot hardening                    |
 
 
-Next: Phase 7 — citation/source trust UI. Phase 6 passed live generation, grounding, refusal, streaming, and persistence checks with Gemini and local BGE embeddings.
+Current: Phase 7 implementation is complete; the manual browser smoke check above remains pending. After it passes, proceed to Phase 8's client-brief evaluation. Phase 6 passed live generation, grounding, refusal, streaming, and persistence checks with Gemini and local BGE embeddings.

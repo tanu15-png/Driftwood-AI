@@ -18,7 +18,7 @@ from app.assistant.agent import create_agent, create_gemini_model
 from app.assistant.runtime import AssistantRuntime, get_runtime
 from app.auth.dependencies import _engine
 from app.config import settings
-from app.database.models import DocumentChunk, MessageCitation, Profile
+from app.database.models import ChatMessage, DocumentChunk, MessageCitation, Profile
 from app.database.supabase import create_admin_client
 from app.embeddings import create_model
 from app.main import app
@@ -125,6 +125,19 @@ async def test_live_auth_stream_and_history() -> None:
             assert replay[-1]["parts"][0]["text"].startswith("The filing corpus does not contain enough evidence")
             listed = await api.get("/threads", headers=headers[0])
             assert any(t["id"] == thread_id for t in listed.json())
+            delete_url = f"/threads/{thread_id}"
+            assert (await api.delete(delete_url, headers=headers[1])).status_code == 403
+            assert (await api.delete(delete_url, headers=headers[0])).status_code == 204
+            assert (await api.get(history_url, headers=headers[0])).status_code == 404
+            assert (await api.delete(delete_url, headers=headers[0])).status_code == 404
+            async with AsyncSession(_engine) as session:
+                assert not (await session.execute(
+                    select(ChatMessage.id).where(ChatMessage.thread_id == UUID(thread_id))
+                )).all()
+                assert not (await session.execute(
+                    select(MessageCitation.id).where(MessageCitation.message_id == UUID(assistant["id"]))
+                )).all()
+            assert all(t["id"] != thread_id for t in (await api.get("/threads", headers=headers[0])).json())
     finally:
         app.dependency_overrides.pop(get_runtime, None)
         await model.client.aio.aclose()

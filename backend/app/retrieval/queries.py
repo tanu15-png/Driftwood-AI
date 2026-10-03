@@ -12,6 +12,8 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.retrieval.keywords import extract_keywords
+
 # Candidate pools must exceed the final top-k so RRF has overlap to work with.
 DENSE_CANDIDATES = 100
 FTS_CANDIDATES = 100
@@ -29,16 +31,17 @@ _DENSE_SQL = text("""
     LIMIT :limit
 """)
 
-# websearch_to_tsquery: analyst-friendly syntax ("iPhone vs Services revenue",
-# quoted phrases, OR, -exclusions) without writing tsquery expressions.
+# OR preserves recall when relevant passages contain only some query keywords.
+# Only extracted alphanumeric tokens enter this bound tsquery expression.
 _FTS_SQL = text("""
     SELECT c.id
     FROM document_chunks c
     JOIN source_documents s ON s.id = c.document_id
     WHERE (CAST(:ticker AS text) IS NULL OR s.ticker = :ticker)
       AND (CAST(:fiscal_year AS integer) IS NULL OR s.fiscal_year = :fiscal_year)
-      AND search_vector @@ websearch_to_tsquery('english', :query)
-    ORDER BY ts_rank_cd(search_vector, websearch_to_tsquery('english', :query)) DESC
+      AND search_vector @@ to_tsquery('english', :keyword_query)
+    ORDER BY ts_rank_cd(search_vector, to_tsquery('english', :keyword_query)) DESC,
+             c.id
     LIMIT :limit
 """)
 
@@ -71,10 +74,13 @@ async def full_text_search(
     ticker: str | None = None,
     fiscal_year: int | None = None,
 ) -> list[UUID]:
+    keywords = extract_keywords(query)
+    if not keywords:
+        return []
     result = await session.execute(
         _FTS_SQL,
         {
-            "query": query,
+            "keyword_query": " | ".join(keywords),
             "limit": limit,
             "ticker": ticker.upper() if ticker else None,
             "fiscal_year": fiscal_year,

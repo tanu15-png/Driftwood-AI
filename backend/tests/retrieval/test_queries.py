@@ -24,7 +24,27 @@ async def test_fts_query_is_bound_and_scoped() -> None:
     query = "revenue'; DROP TABLE source_documents; --"
     assert await full_text_search(session, query, fiscal_year=2024) == []
     statement, params = session.execute.call_args.args
-    assert params["query"] == query
+    assert params["keyword_query"] == "revenue | drop | table | source | documents"
     assert query not in str(statement)
     assert params["ticker"] is None
     assert params["fiscal_year"] == 2024
+
+
+async def test_fts_searches_keywords_without_question_filler() -> None:
+    session = AsyncMock()
+    session.execute.return_value = []
+    await full_text_search(
+        session, "Please show Apple's iPhone vs Services revenue mix", ticker="aapl"
+    )
+    statement, params = session.execute.call_args.args
+    assert params["keyword_query"] == "apple | iphone | services | revenue | mix"
+    assert params["ticker"] == "AAPL"
+    assert "websearch_to_tsquery" not in str(statement)
+    assert "to_tsquery('english', :keyword_query)" in str(statement)
+    assert str(statement).index("s.ticker = :ticker") < str(statement).index("LIMIT")
+
+
+async def test_fts_skips_queries_with_no_keywords() -> None:
+    session = AsyncMock()
+    assert await full_text_search(session, "Please tell me what it is") == []
+    session.execute.assert_not_awaited()

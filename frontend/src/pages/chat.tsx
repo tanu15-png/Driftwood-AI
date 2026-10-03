@@ -1,321 +1,106 @@
-import { useChat } from '@ai-sdk/react'
-import { DefaultChatTransport, isTextUIPart, type UIMessage } from 'ai'
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { NavLink, useLocation, useNavigate, useParams } from 'react-router-dom'
+import { PanelLeft, MessageSquare, ArrowUpRight } from 'lucide-react'
+import { useCallback, useEffect, useState } from 'react'
+import { useLocation, useNavigate, useParams } from 'react-router-dom'
+import ChatPanel from '@/components/chat/ChatPanel'
+import Composer from '@/components/chat/Composer'
+import DeleteChatDialog from '@/components/chat/DeleteChatDialog'
+import ThreadSidebar from '@/components/chat/ThreadSidebar'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+import { Sheet, SheetContent, SheetTitle, SheetDescription } from '@/components/ui/sheet'
 import { useAuth } from '@/lib/auth'
 import { api, type Thread } from '@/lib/api'
-import { env } from '@/lib/env'
-import { ApiError, NetworkError } from '@/lib/http'
+import { errorMessage } from '@/lib/error-message'
 
-function errorMessage(err: unknown): string {
-  if (err instanceof NetworkError) return err.message
-  if (err instanceof ApiError) {
-    if (err.status === 401) return 'Your session expired — sign in again.'
-    if (err.status === 403) return 'You do not have access to this thread.'
-    if (err.status === 404) return 'Thread not found.'
-    return `Backend said ${err.status}: ${err.message}`
-  }
-  return err instanceof Error ? err.message : 'Unexpected error'
-}
+const suggestions = [
+  { title: 'Apple revenue mix', question: "Compare Apple's iPhone and Services revenue in fiscal 2024." },
+  { title: 'Microsoft cloud growth', question: "What did Microsoft disclose about Azure growth in fiscal 2024?" },
+  { title: 'NVIDIA demand', question: "What does NVIDIA's latest 10-K say about Data Center demand?" },
+  { title: 'Amazon operating income', question: "Compare AWS and North America operating income in Amazon's fiscal 2024 filing." },
+]
 
-function ErrorBanner({ children }: { children: string }) {
-  return (
-    <p role="alert" className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-      {children}
-    </p>
-  )
-}
-
-function MessageBubble({ message }: { message: UIMessage }) {
-  const text = message.parts
-    .filter(isTextUIPart)
-    .map((part) => part.text)
-    .join('')
-  const isUser = message.role === 'user'
-
-  return (
-    <div className={isUser ? 'flex justify-end' : 'flex justify-start'}>
-      <div
-        className={
-          isUser
-            ? 'max-w-[80%] rounded-2xl bg-primary px-4 py-2 text-sm whitespace-pre-wrap text-primary-foreground'
-            : 'max-w-[80%] rounded-2xl bg-muted px-4 py-2 text-sm whitespace-pre-wrap'
-        }
-      >
-        {text}
-      </div>
-    </div>
-  )
-}
-
-const field =
-  'flex w-full flex-col gap-1.5 [&>label]:text-sm [&>label]:font-medium [&>label]:text-foreground'
-
-/**
- * One active conversation: loads persisted history, streams replies via
- * /chat/stream. Remounted (keyed) on every thread switch, so useChat state
- * never leaks between threads.
- */
-function ChatPanel({
-  threadId,
-  draft,
-  onTurnFinished,
-}: {
-  threadId: string
-  draft: string | null
-  onTurnFinished: () => void
-}) {
-  const [text, setText] = useState('')
-  const [historyError, setHistoryError] = useState<string | null>(null)
-  const [streamError, setStreamError] = useState<string | null>(null)
-  const scrollRef = useRef<HTMLDivElement>(null)
-
-  // One transport per panel instance; it closes over this thread's id.
-  const [transport] = useState(
-    () =>
-      new DefaultChatTransport({
-        api: `${env.apiBaseUrl}/chat/stream`,
-        prepareSendMessagesRequest: ({ messages }) => ({
-          // Backend persists the last message and streams the reply.
-          body: { threadId, messages },
-        }),
-      }),
-  )
-
-  const { messages, sendMessage, setMessages, status, stop, regenerate, clearError } = useChat({
-    transport,
-    onError: (err) => setStreamError(err.message),
-    // Sidebar ordering/title refresh after each completed turn.
-    onFinish: () => onTurnFinished(),
-  })
-
-  // Load persisted history once per thread (panel is keyed by threadId, so
-  // state resets on switch — no manual error clearing needed).
-  useEffect(() => {
-    let cancelled = false
-    api
-      .threadMessages(threadId)
-      .then((raw) => {
-        if (!cancelled) setMessages(raw as UIMessage[])
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) setHistoryError(errorMessage(err))
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [threadId, setMessages])
-
-  // First message of a brand-new thread: ChatPage created the thread and
-  // handed us the text; send it exactly once.
-  const sentDraftRef = useRef(false)
-  useEffect(() => {
-    if (sentDraftRef.current || !draft) return
-    sentDraftRef.current = true
-    void sendMessage({ text: draft })
-  }, [draft, sendMessage])
-
-  // Keep the newest message in view while streaming.
-  useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
-  }, [messages])
-
-  const streaming = status === 'submitted' || status === 'streaming'
-
-  return (
-    <section className="flex min-h-0 flex-1 flex-col">
-      <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto p-4">
-        {historyError && <ErrorBanner>{historyError}</ErrorBanner>}
-        {messages.length === 0 && !historyError && !streaming && (
-          <p className="pt-24 text-center text-sm text-muted-foreground">
-            Ask a question about the filings. Grounded answers with citations arrive in Phase 6.
-          </p>
-        )}
-        {messages.map((message) => (
-          <MessageBubble key={message.id} message={message} />
-        ))}
-        {status === 'submitted' && (
-          <p className="text-sm text-muted-foreground">Assistant is thinking…</p>
-        )}
-      </div>
-
-      <footer className="border-t p-3">
-        {streamError && (
-          <div className="mb-2 flex items-center gap-2">
-            <ErrorBanner>{`Stream failed: ${streamError}`}</ErrorBanner>
-            <Button variant="outline" size="sm" onClick={() => void regenerate()}>
-              Retry
-            </Button>
-            <Button variant="ghost" size="sm" onClick={clearError}>
-              Dismiss
-            </Button>
-          </div>
-        )}
-        <form
-          className="flex gap-2"
-          onSubmit={(event) => {
-            event.preventDefault()
-            const value = text.trim()
-            if (!value || streaming) return
-            setStreamError(null)
-            void sendMessage({ text: value })
-            setText('')
-          }}
-        >
-          <Input
-            value={text}
-            onChange={(event) => setText(event.target.value)}
-            placeholder={streaming ? 'Assistant is replying…' : 'Ask about the filings…'}
-            disabled={streaming}
-          />
-          {streaming ? (
-            <Button type="button" variant="outline" onClick={stop}>
-              Stop
-            </Button>
-          ) : (
-            <Button type="submit" disabled={!text.trim()}>
-              Send
-            </Button>
-          )}
-        </form>
-        {streaming && status === 'streaming' && (
-          <p className="mt-1 text-xs text-muted-foreground">Streaming…</p>
-        )}
-      </footer>
-    </section>
-  )
-}
-
-function ChatPageInner() {
+export default function ChatPage() {
   const { user, signOut } = useAuth()
   const { threadId } = useParams()
   const navigate = useNavigate()
   const location = useLocation()
   const [threads, setThreads] = useState<Thread[] | null>(null)
   const [threadsError, setThreadsError] = useState<string | null>(null)
-  const [text, setText] = useState('')
   const [creating, setCreating] = useState(false)
-
-  // Bumping this re-runs the sidebar fetch effect.
+  const [mobileNav, setMobileNav] = useState(false)
+  const [showSidebar, setShowSidebar] = useState(true)
+  const [deleteTarget, setDeleteTarget] = useState<Thread | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
-  const refreshThreads = useCallback(() => setRefreshKey((k) => k + 1), [])
-
+  const refreshThreads = useCallback(() => setRefreshKey((value) => value + 1), [])
   useEffect(() => {
     let cancelled = false
-    api
-      .listThreads()
-      .then((rows) => {
-        if (!cancelled) {
-          setThreads(rows)
-          setThreadsError(null)
-        }
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) setThreadsError(errorMessage(err))
-      })
-    return () => {
-      cancelled = true
-    }
+    api.listThreads().then((rows) => {
+      if (!cancelled) { setThreads(rows); setThreadsError(null) }
+    }).catch((err: unknown) => { if (!cancelled) setThreadsError(errorMessage(err)) })
+    return () => { cancelled = true }
   }, [refreshKey])
 
-  // First message of a brand-new thread: create it, pass the text as a draft.
-  async function startThread(value: string) {
+  async function startThread(text: string) {
     setCreating(true)
     try {
       const thread = await api.createThread()
-      navigate(`/t/${thread.id}`, { state: { draft: value }, replace: true })
+      navigate(`/t/${thread.id}`, { state: { draft: text }, replace: true })
       refreshThreads()
-    } catch (err: unknown) {
-      setThreadsError(errorMessage(err))
-    } finally {
-      setCreating(false)
-    }
+    } catch (err: unknown) { setThreadsError(errorMessage(err)) }
+    finally { setCreating(false) }
   }
+  async function deleteThread(thread: Thread) {
+    setMobileNav(false)
+    setDeleteTarget(null)
+    setDeletingId(thread.id)
+    if (thread.id === threadId) navigate('/', { replace: true })
+    try {
+      await api.deleteThread(thread.id)
+      setThreads((rows) => rows?.filter((row) => row.id !== thread.id) ?? null)
+      refreshThreads()
+    } catch (err: unknown) { setThreadsError(errorMessage(err)) }
+    finally { setDeletingId(null) }
+  }
+  const sidebar = <ThreadSidebar threads={threads} error={threadsError} email={user?.email ?? ''}
+    deletingId={deletingId} onNew={() => { setMobileNav(false); navigate('/') }}
+    onSelect={() => setMobileNav(false)} onDelete={setDeleteTarget}
+    onRetry={() => { setThreadsError(null); refreshThreads() }} onSignOut={() => { void signOut() }} />
 
-  return (
-    <div className="flex min-h-svh">
-      <aside className="flex w-64 shrink-0 flex-col border-r bg-sidebar">
-        <div className="p-3">
-          <Button className="w-full" onClick={() => navigate('/')}>
-            New chat
-          </Button>
-        </div>
-        <nav className="flex-1 space-y-1 overflow-y-auto px-2 pb-2">
-          {threads === null && (
-            <p className="px-2 py-1 text-sm text-muted-foreground">Loading threads…</p>
-          )}
-          {threadsError && <ErrorBanner>{threadsError}</ErrorBanner>}
-          {threads?.length === 0 && (
-            <p className="px-2 py-1 text-sm text-muted-foreground">No conversations yet.</p>
-          )}
-          {threads?.map((thread) => (
-            <NavLink
-              key={thread.id}
-              to={`/t/${thread.id}`}
-              className={({ isActive }) =>
-                `block truncate rounded-md px-2 py-1.5 text-sm ${
-                  isActive
-                    ? 'bg-sidebar-accent text-sidebar-accent-foreground'
-                    : 'text-sidebar-foreground hover:bg-sidebar-accent/50'
-                }`
-              }
-              title={thread.title ?? 'Untitled'}
-            >
-              {thread.title ?? 'Untitled'}
-            </NavLink>
-          ))}
-        </nav>
-        <div className="space-y-2 border-t p-3 text-sm">
-          <p className="truncate text-muted-foreground" title={user?.email ?? ''}>
-            {user?.email}
-          </p>
-          <Button variant="outline" size="sm" className="w-full" onClick={() => void signOut()}>
-            Sign out
-          </Button>
-        </div>
-      </aside>
-
-      {threadId ? (
-        <ChatPanel
-          key={threadId}
-          threadId={threadId}
-          draft={(location.state as { draft?: string } | null)?.draft ?? null}
-          onTurnFinished={() => refreshThreads()}
-        />
-      ) : (
-        <section className="flex min-h-0 flex-1 flex-col items-center justify-center gap-6 px-4">
-          <h1 className="text-2xl font-semibold tracking-tight">Document Copilot</h1>
-          <form
-            className="w-full max-w-md space-y-3"
-            onSubmit={(event) => {
-              event.preventDefault()
-              const value = text.trim()
-              if (!value || creating) return
-              void startThread(value)
-            }}
-          >
-            <div className={field}>
-              <label htmlFor="new-question">Start a new conversation</label>
-              <Input
-                id="new-question"
-                value={text}
-                onChange={(event) => setText(event.target.value)}
-                placeholder="Ask about the filings…"
-                disabled={creating}
-              />
+  return <div className="flex h-svh overflow-hidden bg-white">
+    {showSidebar && <aside className="hidden w-64 shrink-0 md:block">{sidebar}</aside>}
+    <Sheet open={mobileNav} onOpenChange={setMobileNav}>
+      <SheetContent side="left" className="gap-0 bg-sidebar p-0 data-[side=left]:w-72">
+        <SheetTitle className="sr-only">Conversations</SheetTitle>
+        <SheetDescription className="sr-only">Open, create, or delete your conversations.</SheetDescription>
+        {sidebar}
+      </SheetContent>
+    </Sheet>
+    <main className="flex min-w-0 flex-1 flex-col">
+      <header className="flex h-16 shrink-0 items-center gap-2 px-4">
+        <Button variant="ghost" size="icon-sm" className="md:hidden" aria-label="Open conversations" onClick={() => setMobileNav(true)}><PanelLeft className="size-5" /></Button>
+        <Button variant="ghost" size="icon-sm" className="hidden md:inline-flex" aria-label={showSidebar ? 'Hide conversations' : 'Show conversations'} onClick={() => setShowSidebar(!showSidebar)}><PanelLeft className="size-5" /></Button>
+        <span className="text-lg font-semibold tracking-tight">Document Copilot</span>
+        <span className="ml-auto rounded-full border px-2.5 py-1 text-[11px] text-muted-foreground">SEC research</span>
+      </header>
+      {threadId ? <ChatPanel key={threadId} threadId={threadId}
+        draft={(location.state as { draft?: string } | null)?.draft ?? null} onTurnFinished={refreshThreads} />
+        : <section className="flex min-h-0 flex-1 flex-col items-center justify-center overflow-y-auto px-5 pb-16">
+          <div className="w-full max-w-3xl space-y-7">
+            <div className="space-y-3 text-center">
+              <span className="mx-auto grid size-12 place-items-center rounded-2xl border"><MessageSquare className="size-6" /></span>
+              <h1 className="text-3xl font-medium tracking-tight sm:text-4xl">What would you like to know?</h1>
+              <p className="text-sm text-muted-foreground">Explore the filings. Follow the evidence.</p>
             </div>
-            <Button type="submit" className="w-full" disabled={!text.trim() || creating}>
-              {creating ? 'Creating thread…' : 'Ask'}
-            </Button>
-          </form>
-        </section>
-      )}
-    </div>
-  )
-}
-
-export default function ChatPage() {
-  return <ChatPageInner />
+            <Composer busy={creating} onSend={(text) => { void startThread(text) }} />
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {suggestions.map((item) => <button key={item.title} type="button" disabled={creating}
+                className="flex items-center justify-between gap-3 rounded-2xl border p-4 text-left transition-colors hover:bg-muted disabled:opacity-50"
+                onClick={() => { void startThread(item.question) }}><span className="text-sm">{item.title}</span><ArrowUpRight className="size-4 text-muted-foreground" /></button>)}
+            </div>
+            <p className="text-center text-xs text-muted-foreground">Apple · Amazon · Alphabet · Microsoft · NVIDIA</p>
+          </div>
+        </section>}
+    </main>
+    <DeleteChatDialog thread={deleteTarget} onClose={() => setDeleteTarget(null)} onConfirm={(thread) => { void deleteThread(thread) }} />
+  </div>
 }

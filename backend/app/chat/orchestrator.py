@@ -18,6 +18,7 @@ from pydantic_ai.usage import UsageLimits
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.assistant.agent import MAX_MODEL_REQUESTS, MAX_TOOL_CALLS
 from app.assistant.deps import DocumentAgentDeps, DocumentRetriever
 from app.assistant.outputs import GroundedAnswer, SourcePassage
 from app.assistant.runtime import AssistantRuntime
@@ -63,7 +64,7 @@ async def prepare_turn(
         }, ensure_ascii=False)
         result = await runtime.agent.run(
             prompt, deps=deps,
-            usage_limits=UsageLimits(request_limit=6, tool_calls_limit=5),
+            usage_limits=UsageLimits(request_limit=MAX_MODEL_REQUESTS, tool_calls_limit=MAX_TOOL_CALLS),
         )
         sources = validator.validate(result.output, retriever.passages)
         usage = result.usage
@@ -76,8 +77,22 @@ async def prepare_turn(
         logger.warning("grounding_rejected", reason=str(exc))
         raise HTTPException(502, "Grounding validation failed; no answer was produced.") from exc
     except (ModelAPIError, UnexpectedModelBehavior, UsageLimitExceeded) as exc:
-        logger.warning("generation_failed", error_type=type(exc).__name__, status_code=getattr(exc, "status_code", None))
-        raise HTTPException(502, "Answer generation failed; please retry later.") from exc
+        provider_status = getattr(exc, "status_code", None)
+        logger.warning("generation_failed", error_type=type(exc).__name__, status_code=provider_status)
+        if isinstance(exc, UsageLimitExceeded):
+            logger.warning("assistant_limit_exceeded", reason=str(exc))
+        detail = "Gemini answer generation failed; please retry later."
+        if provider_status == 429:
+            detail = "Gemini rate limit or quota exhausted. Wait before retrying, or check the Gemini project's quota and billing."
+        elif provider_status == 404:
+            detail = "The configured Gemini model is unavailable. Check GEMINI_MODEL in backend/.env."
+        elif provider_status in (401, 403):
+            detail = "Gemini rejected the backend credentials or permissions. Check GEMINI_API_KEY and its project access."
+        elif isinstance(exc, UnexpectedModelBehavior):
+            detail = "Gemini did not return a valid grounded answer within the correction limit. Please retry or narrow the question."
+        elif isinstance(exc, UsageLimitExceeded):
+            detail = "The question exceeded the assistant's request or tool-call limit. Try a narrower question."
+        raise HTTPException(502, detail) from exc
     except SQLAlchemyError as exc:
         raise HTTPException(503, "Filing retrieval is temporarily unavailable.") from exc
 

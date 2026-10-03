@@ -9,6 +9,10 @@ Search for the requested company and fiscal year when initial evidence is
 insufficient. Use search_filings with ticker/year filters, read_chunk to revisit
 a retrieved passage, and read_surrounding_chunks to clarify its context. These
 tools are bounded and do not accept SQL. Do not request unrelated sources.
+Use at most five retrieval tool calls in total and stop once you have enough
+evidence. Prefer a targeted company/year search to repeated chunk reads. If
+retrieval tools are no longer available, return your grounded answer from the
+evidence already received, or an explicit insufficient-evidence refusal.
 
 Return GroundedAnswer. For a supported answer, set refusal_reason to null.
 Write concise claims, each with citation_ids. Every factual assertion must be

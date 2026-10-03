@@ -43,6 +43,7 @@ class FakeChats:
         self.created_with = None
         self.persisted = None
         self.owned_calls = 0
+        self.deleted = None
 
     async def list_threads(self, session, user_id):
         return [ThreadOut(self.thread_id)]
@@ -58,6 +59,10 @@ class FakeChats:
 
     async def list_messages(self, session, thread_id):
         return []
+
+    async def delete_thread(self, session, user_id, thread_id):
+        await self.get_owned_thread(session, user_id, thread_id)
+        self.deleted = thread_id
 
     async def persist_turn(self, session, thread, user_message, assistant_message, citations=()):
         self.persisted = (user_message, assistant_message)
@@ -110,6 +115,28 @@ def test_list_messages_requires_ownership(client, fake_chats) -> None:
     assert response.status_code == 200
     assert response.json() == []
     assert fake_chats.owned_calls == 1
+
+
+def test_delete_thread_returns_empty_204(client, fake_chats) -> None:
+    response = client.delete(f"/threads/{fake_chats.thread_id}")
+    assert response.status_code == 204
+    assert response.content == b""
+    assert fake_chats.deleted == fake_chats.thread_id
+    assert fake_chats.owned_calls == 1
+
+
+@pytest.mark.parametrize("code", [403, 404])
+def test_delete_thread_propagates_ownership_errors(client, fake_chats, monkeypatch, code) -> None:
+    async def reject(*args):
+        raise HTTPException(code, "Cannot delete this thread")
+
+    monkeypatch.setattr(fake_chats, "get_owned_thread", reject)
+    assert client.delete(f"/threads/{fake_chats.thread_id}").status_code == code
+    assert fake_chats.deleted is None
+
+
+def test_delete_thread_requires_auth() -> None:
+    assert TestClient(app).delete(f"/threads/{uuid4()}").status_code == 401
 
 
 def _stream_request(thread_id: UUID) -> dict:

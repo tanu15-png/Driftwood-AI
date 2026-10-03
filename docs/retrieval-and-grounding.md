@@ -11,7 +11,8 @@ flowchart TD
     Owner --> Context[Load server-stored conversation context]
     Context --> Embed[Local BGE query embedding: 384 dimensions]
     Embed --> Vector[pgvector similarity search]
-    Context --> Keywords[Postgres full-text search]
+    Context --> Extract[Extract keywords from question: remove filler and duplicates]
+    Extract --> Keywords[Postgres keyword search: OR matching and relevance ranking]
     Vector --> RRF[Reciprocal Rank Fusion]
     Keywords --> RRF
     RRF --> Rerank[Optional Cohere reranking]
@@ -23,7 +24,9 @@ flowchart TD
     Tools --> Ledger
     Agent --> Validate[Validate claims, citation IDs, and verbatim quotes]
     Validate --> Valid{Valid output?}
-    Valid -- No --> Error[HTTP 502: no answer text streamed]
+    Valid -- Correction available --> Correction[Return validator feedback: at most one correction]
+    Correction --> Agent
+    Valid -- Correction exhausted --> Error[HTTP 502: no answer text streamed]
     Valid -- Yes --> Sources[Attach canonical database source metadata]
     Sources --> Stream[AI SDK SSE: text deltas, citations, sources, status]
     Refusal --> Stream
@@ -31,6 +34,9 @@ flowchart TD
     Commit -- Success --> Finish[Finish event and DONE]
     Commit -- Failure --> SaveError[Rollback and stream error]
     Finish --> Replay[Saved UI messages replay structured parts]
+    Stream --> Trust[Render cited answers or distinct refusal cards]
+    Replay --> Trust
+    Trust --> Inspect[Open right sidebar: exact quote, filing metadata, full passage]
 ```
 
 ## Request and retrieval
@@ -42,18 +48,63 @@ messages, limited to the last twelve messages and 1,500 characters per message.
 Questions exceeding the local model's 510-token content budget return HTTP 422.
 
 `app/retrieval/retriever.py` embeds the question on a worker thread and performs
-separate vector and full-text queries. Company/year filters apply before the
+separate vector and keyword full-text queries. Company/year filters apply before the
 candidate limits. RRF combines the rankings; optional Cohere reranking follows.
 `app/assistant/deps.py` records canonical `SourcePassage` objects for the turn.
 Similarity ranking identifies candidate evidence; it does not establish that a
 question is answerable.
+
+### Keywords for full-text search
+
+The semantic branch embeds the complete question to retain its context. The
+lexical branch calls `extract_keywords` in `app/retrieval/keywords.py` before
+searching `document_chunks.search_vector`:
+
+1. Lowercase the question and normalize possessives (`Apple's` / `Apple’s` →
+   `apple`).
+2. Extract alphanumeric tokens, keeping company names, tickers, financial terms,
+   and numbers such as fiscal years.
+3. Remove common stop words and conversational filler such as `what`, `please`,
+   `show`, `compare`, and `vs`.
+4. Deduplicate keywords in their original order.
+5. Bind an OR expression to `to_tsquery('english', :keyword_query)`. PostgreSQL
+   applies English stemming and its own stop-word dictionary. Rank matches with
+   `ts_rank_cd`, then use chunk ID to break ties consistently.
+
+Example:
+
+```text
+Question: What is Apple's iPhone vs Services revenue mix?
+Keywords: apple, iphone, services, revenue, mix
+FTS input: apple | iphone | services | revenue | mix
+```
+
+A passage can match any extracted keyword, so it need not contain every word
+from a conversational question. OR matching broadens candidates; full-text
+ranking and fusion with semantic search determine the final passage order.
+Ticker/year filters still apply before candidate limits. If extraction produces
+no keywords, the lexical branch returns no candidates and semantic retrieval
+continues. SQL remains parameterized, and user punctuation is discarded before
+building the expression; quoted phrases and exclusion operators are not search
+syntax in this keyword mode.
+
+Extraction is a local, deterministic heuristic. It uses no LLM call or added
+dependency, and does not infer synonyms or resolve ambiguous company names.
+The semantic branch supplies context-based matching. Initial retrieval and the
+agent's `search_filings` tool both use this same keyword extraction path.
 
 The agent initially receives ten passages. It can search again with ticker/year
 filters, reread a retrieved chunk, or fetch up to three neighbors on each side
 of a retrieved chunk. Tool results extend the same evidence ledger. The agent
 cannot issue SQL or read arbitrary chunk IDs. Tool execution is sequential so
 the request's SQLAlchemy session is not used concurrently. Each run allows at
-most six model requests and five tool calls, with one schema correction retry.
+most six model requests and five tool calls, with one schema or grounding
+correction retry. Grounding failures return validator feedback through
+PydanticAI's `ModelRetry`; a corrected answer must pass the same checks. If the
+correction budget is exhausted, the turn fails before any answer text streams.
+Retrieval tools are removed after four model requests or five tool calls, so
+the remaining requests can produce the final answer and its correction. If the
+collected evidence is insufficient at that point, the model must refuse.
 
 ## Typed generation and validation
 
@@ -106,6 +157,40 @@ A disconnect before persistence skips the commit. Once the commit succeeds,
 the turn is durable even if the connection drops before the final event arrives.
 Database failures roll back and emit an SSE error without a successful finish.
 History replays the saved structured parts verbatim.
+
+## Inspecting evidence in the chat UI
+
+The frontend reads the same typed citation, source, and grounding parts from
+live responses and saved history. Clicking a numbered citation opens its exact
+quote in a right-hand evidence sidebar, together with company/ticker, filing type,
+fiscal year, filing date, and page/section. Missing HTML locations are labeled
+unavailable. The full retrieved passage can be expanded with the quote
+highlighted; the original SEC filing remains available through a separate link.
+“Open original SEC filing” opens a new tab with a URL text fragment built from
+the cited quote (whitespace normalized, conversion-added spaces before trademark
+symbols removed, and fragment punctuation encoded). In
+supporting browsers, a matching excerpt is scrolled into view and highlighted.
+This is a best-effort match against the SEC page, not a verified HTML location:
+flattened tables, changed punctuation, and quotes spanning HTML blocks may not
+match. If unsupported or unmatched, the filing opens normally. “Open without
+highlighting” provides a plain filing link. Neither link changes the SEC document
+or the stored evidence. See [browser text-fragment behavior](https://developer.mozilla.org/en-US/docs/Web/URI/Reference/Fragment/Text_fragments).
+The panel sits beside the conversation on wide screens and opens as a drawer
+on smaller screens. Switching conversations closes the previous evidence panel.
+
+Insufficient-evidence and investment-advice refusals have distinct amber cards
+and explicit labels. Older messages without grounding parts are not labeled as
+cited answers. The shared authenticated fetch adapter preserves HTTP status
+errors for the chat stream and JSON routes, so the UI distinguishes session,
+ownership, missing-thread, invalid-input, generation, server, and network/CORS
+failures. Successful turns give untitled threads a question-derived title and
+update the sidebar timestamp.
+
+Conversation deletion uses authenticated `DELETE /threads/{id}`. The backend
+checks ownership before deletion (403 for another user's thread, 404 for a
+missing thread). Existing database foreign-key cascades remove its messages
+and message citations atomically. The UI asks for confirmation and stops an
+active chat stream when leaving the deleted conversation.
 
 ## Configuration and verification
 

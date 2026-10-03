@@ -5,6 +5,11 @@ from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
+from pydantic_ai.exceptions import (
+    ModelHTTPError,
+    UnexpectedModelBehavior,
+    UsageLimitExceeded,
+)
 from pydantic_ai.messages import ModelResponse, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 from sqlalchemy.exc import SQLAlchemyError
@@ -104,3 +109,33 @@ async def test_database_failure_sends_error_without_success(monkeypatch, source)
     session.rollback.assert_awaited_once()
     assert any('"type": "error"' in e for e in events)
     assert not any('"type": "finish"' in e for e in events)
+
+
+@pytest.mark.parametrize("provider_status,detail", [
+    (429, "quota exhausted"),
+    (404, "GEMINI_MODEL"),
+    (401, "GEMINI_API_KEY"),
+    (403, "GEMINI_API_KEY"),
+    (500, "answer generation failed"),
+    (None, "correction limit"),
+    (0, "tool-call limit"),
+])
+async def test_generation_errors_have_safe_specific_details(monkeypatch, source, provider_status, detail):
+    if provider_status is None:
+        failure = UnexpectedModelBehavior("private upstream output")
+    elif provider_status == 0:
+        failure = UsageLimitExceeded("private upstream output")
+    else:
+        failure = ModelHTTPError(provider_status, "test-model", body="private upstream output")
+    retriever = SimpleNamespace(passages={source.id: source}, search=AsyncMock(return_value=[source]))
+    monkeypatch.setattr(orchestrator, "DocumentRetriever", lambda *args: retriever)
+    monkeypatch.setattr(orchestrator.chats, "list_messages", AsyncMock(return_value=[]))
+    runtime = AssistantRuntime(
+        SimpleNamespace(run=AsyncMock(side_effect=failure)),
+        SimpleNamespace(tokenizer=SimpleNamespace(count_tokens=lambda text: 10)),
+    )
+    with pytest.raises(HTTPException) as exc:
+        await prepare_turn(None, CurrentUser(uuid4(), "test@example.com"), uuid4(), "question", runtime)
+    assert exc.value.status_code == 502
+    assert detail in exc.value.detail
+    assert "private upstream output" not in exc.value.detail
