@@ -139,6 +139,7 @@ Add these under **frontend → Variables**, before building:
 | Problem | Check |
 | --- | --- |
 | Backend will not start | Required variables, migration logs, model startup logs |
+| Startup downloads PyTorch/CUDA/dev tools | Clear Railway's custom Start Command and use the Docker CMD; plain `uv run` syncs dev dependencies. The Docker image sets `UV_NO_SYNC=1` after installing runtime dependencies. |
 | Model cache missing | `/models` volume, cache variable, Docker startup logs |
 | Healthcheck timeout | `PORT`, host binding, first download time, memory |
 | UI cannot reach API | Public API URL, frontend rebuild, exact CORS origin |
@@ -146,6 +147,11 @@ Add these under **frontend → Variables**, before building:
 | Supabase/auth failure | Same project on both services; keys and DB connection |
 | Gemini quota/model error | Key quota and model availability; Docker will not fix this |
 | No filing evidence | Corpus exists in the target Supabase database; retrieval results |
+
+If the traceback stops at `from app.config import settings`, copy its final
+exception lines. Check required backend Variables and the database URL; local
+`.env` files are deliberately excluded from the image. Downloads alone do not
+identify the cause of a configuration crash.
 
 **Later releases:** push to the connected branch, review migrations, and rebuild
 for changed frontend variables. Do not ingest the corpus on every startup.

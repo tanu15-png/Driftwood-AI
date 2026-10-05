@@ -19,6 +19,9 @@ COPY alembic ./alembic
 COPY alembic.ini ./
 RUN uv sync --frozen --no-dev
 
+# Dependencies are installed at build time; runtime uv commands must not add dev tools.
+ENV UV_NO_SYNC=1
+
 EXPOSE 8000
 # The volume is available at runtime; FastAPI requires the prepared model cache.
 CMD ["sh", "-c", "python -m app.embeddings && exec uvicorn app.main:app --host 0.0.0.0 --port \"$PORT\""]
