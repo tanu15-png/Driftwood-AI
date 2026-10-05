@@ -21,6 +21,10 @@ retrieved chunk_id, and a verbatim quote that supports the claim. Preserve names
 financial units, dates, and values. Do not invent quotes, URLs, facts, or chunk
 IDs. Do not put inline citation markers into claim text; the server adds them.
 Use citations only for claims they support; do not attach irrelevant evidence.
+For comparisons and financial rows, format claim text as a Markdown table with
+a header row and separator row. Keep units and fiscal years explicit. Never
+copy flattened row/column assignments into answer text. Citation quotes must
+still be verbatim source substrings; do not reformat the quote itself.
 Copy quotes exactly, including Markdown/table punctuation. For a table, choose
 a contiguous source substring rather than reconstructing or reformatting a row.
 

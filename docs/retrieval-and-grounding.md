@@ -160,6 +160,21 @@ History replays the saved structured parts verbatim.
 
 ## Inspecting evidence in the chat UI
 
+Answers, citation excerpts, and retrieved passages render Markdown tables with
+column borders and horizontal scrolling. Complete Docling row/column triplet
+lines are converted to tables for display only, preserving column positions,
+empty cells, and repeated values. Generic column numbers are used when the
+serialization does not provide headers. Incomplete or unrecognized lines remain
+verbatim. Stored quotes and the grounding validator still use the original text.
+Answer-table citation markers appear below the table so they remain clickable.
+
+The renderer uses `react-markdown` and `remark-gfm` on every assistant message
+and evidence view. Markdown parsing with nested inline formatting, escaped table
+cells, and safe URL handling cannot be implemented correctly in thirty lines.
+These maintained unified ecosystem parsers add 96 packages to the lockfile;
+they are a deliberate parser dependency rather than a utility wrapper. Raw HTML
+is not enabled. The small Docling triplet conversion stays in local code.
+
 The frontend reads the same typed citation, source, and grounding parts from
 live responses and saved history. Clicking a numbered citation opens its exact
 quote in a right-hand evidence sidebar, together with company/ticker, filing type,

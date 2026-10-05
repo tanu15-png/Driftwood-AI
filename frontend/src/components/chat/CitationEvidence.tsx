@@ -1,10 +1,10 @@
 import type { Citation, SourcePassage } from '@/lib/chat-types'
 import { filingLinks } from '@/lib/filing-links'
+import FilingMarkdown from './FilingMarkdown'
 
 export default function CitationEvidence({
   citation, source,
 }: { citation: Citation; source: SourcePassage }) {
-  const quoteStart = source.chunk_text.indexOf(citation.quote)
   const links = filingLinks(source.source_url, citation.quote)
 
   return (
@@ -21,17 +21,13 @@ export default function CitationEvidence({
       </div>
       <div>
         <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">Cited excerpt</p>
-        <blockquote className="rounded-xl border-l-2 border-zinc-400 bg-muted p-4 whitespace-pre-wrap break-words">{citation.quote}</blockquote>
+        <blockquote className="rounded-xl border-l-2 border-zinc-400 bg-muted p-4"><FilingMarkdown text={citation.quote} /></blockquote>
       </div>
       <details open>
         <summary className="cursor-pointer text-sm font-medium">Full retrieved passage</summary>
-        <p className="mt-3 whitespace-pre-wrap break-words text-sm text-zinc-600">
-          {quoteStart < 0 ? source.chunk_text : <>
-            {source.chunk_text.slice(0, quoteStart)}
-            <mark className="bg-amber-200 text-black">{citation.quote}</mark>
-            {source.chunk_text.slice(quoteStart + citation.quote.length)}
-          </>}
-        </p>
+        <div className="mt-3 text-sm text-zinc-600">
+          <FilingMarkdown text={source.chunk_text} highlight={citation.quote} />
+        </div>
       </details>
       {links && <div className="space-y-2 text-xs">
         <a href={links.highlighted ?? links.original} target="_blank" rel="noopener noreferrer" className="text-primary underline">Open original SEC filing ↗</a>

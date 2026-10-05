@@ -48,7 +48,11 @@ class GroundedAnswer(BaseModel):
             return "The filing corpus does not contain enough evidence to answer this question."
         if self.refusal_reason == "investment_advice":
             return "I can explain the filings, but I cannot provide stock picks or investment advice."
-        return "\n\n".join(
-            f"{claim.text.strip()} {' '.join(f'[{id_}]' for id_ in claim.citation_ids)}"
-            for claim in self.claims
-        )
+        parts = []
+        for claim in self.claims:
+            text = claim.text.strip()
+            markers = " ".join(f"[{id_}]" for id_ in claim.citation_ids)
+            # A marker appended to a table row can be parsed as an extra cell.
+            separator = "\n\n" if any(line.lstrip().startswith("|") for line in text.splitlines()) else " "
+            parts.append(f"{text}{separator}{markers}")
+        return "\n\n".join(parts)

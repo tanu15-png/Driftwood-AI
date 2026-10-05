@@ -1,6 +1,7 @@
 import { isTextUIPart } from 'ai'
 import { FileText } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import FilingMarkdown from './FilingMarkdown'
 import type { ChatMessage, CitationSelection } from '@/lib/chat-types'
 
 export default function MessageBubble({ message, selected, onCitation }: {
@@ -43,13 +44,8 @@ export default function MessageBubble({ message, selected, onCitation }: {
         {!isUser && grounding && <p className="mb-3 text-xs font-medium text-muted-foreground">
           {grounding === 'supported' ? 'Cited filing evidence' : grounding === 'insufficient_evidence' ? 'Insufficient filing evidence' : 'Investment advice request declined'}
         </p>}
-        <div className="whitespace-pre-wrap break-words">
-          {isUser ? text : text.split(/(\[\d+\])/).map((part, index) => {
-            const match = /^\[(\d+)\]$/.exec(part)
-            const id = match ? Number(match[1]) : null
-            return id !== null ? citationButton(id, part, String(index), true) : part
-          })}
-        </div>
+        {isUser ? <div className="whitespace-pre-wrap break-words">{text}</div>
+          : <FilingMarkdown text={text} renderCitation={(id, label, key) => citationButton(id, label, key, true)} />}
         {!isUser && evidence.length > 0 && <div className="mt-5 flex flex-wrap gap-2" aria-label="Citations">
           {evidence.map(({ citation, source }) => citationButton(citation.id,
             `[${citation.id}] ${source.ticker} · ${source.filing_type} FY${source.fiscal_year}`, String(citation.id)))}
